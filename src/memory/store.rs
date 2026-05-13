@@ -1,5 +1,6 @@
 use anyhow::Result;
 use pgvector::Vector;
+use sqlx::QueryBuilder;
 use uuid::Uuid;
 
 use crate::{
@@ -39,12 +40,37 @@ pub async fn store_memory(
     embedding: Vec<f32>,
     source_turn: Option<i32>,
 ) -> Result<Uuid> {
+    store_memory_with_tier(
+        state,
+        agent_id,
+        session_id,
+        content,
+        memory_type,
+        confidence,
+        embedding,
+        source_turn,
+        "L2",
+    )
+    .await
+}
+
+pub async fn store_memory_with_tier(
+    state: &AppState,
+    agent_id: &str,
+    session_id: Option<&str>,
+    content: &str,
+    memory_type: &str,
+    confidence: f32,
+    embedding: Vec<f32>,
+    source_turn: Option<i32>,
+    tier: &str,
+) -> Result<Uuid> {
     let vec = Vector::from(embedding);
     let row: (Uuid,) = sqlx::query_as(
         r#"
         INSERT INTO memories
-            (agent_id, session_id, content, memory_type, confidence, embedding, source_turn)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (agent_id, session_id, content, memory_type, confidence, embedding, source_turn, tier)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING id
         "#,
     )
@@ -55,37 +81,84 @@ pub async fn store_memory(
     .bind(confidence)
     .bind(vec)
     .bind(source_turn)
+    .bind(tier)
     .fetch_one(&state.db)
     .await?;
     Ok(row.0)
 }
 
-/// Cosine-similarity search; returns rows ordered by ascending distance.
+/// Basic cosine-similarity search — used internally by the proxy.
+/// Uses a CTE so the embedding vector is only bound once.
 pub async fn search_memories(
     state: &AppState,
     agent_id: &str,
     embedding: &[f32],
     limit: i64,
 ) -> Result<Vec<MemorySearchRow>> {
+    search_memories_filtered(state, agent_id, embedding, limit, 1.0, None, None).await
+}
+
+/// Full-featured search with optional filters on memory_type and session_id.
+/// The `threshold` is an inclusive upper bound on cosine distance (lower = more similar).
+pub async fn search_memories_filtered(
+    state: &AppState,
+    agent_id: &str,
+    embedding: &[f32],
+    limit: i64,
+    threshold: f64,
+    memory_type: Option<&str>,
+    session_id: Option<&str>,
+) -> Result<Vec<MemorySearchRow>> {
     let vec = Vector::from(embedding.to_vec());
-    let rows = sqlx::query_as::<_, MemorySearchRow>(
+
+    // CTE pre-computes the distance so we can ORDER and filter without binding
+    // the vector twice.
+    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
         r#"
-        SELECT
-            id, agent_id, session_id, content, memory_type, confidence,
-            created_at, source_turn,
-            (embedding <=> $2)::double precision AS distance
-        FROM memories
-        WHERE agent_id = $1
-        ORDER BY embedding <=> $2
-        LIMIT $3
-        "#,
-    )
-    .bind(agent_id)
-    .bind(vec)
-    .bind(limit)
-    .fetch_all(&state.db)
-    .await?;
+        WITH ranked AS (
+            SELECT id, agent_id, session_id, content, memory_type, confidence,
+                   created_at, source_turn,
+                   (embedding <=> "#,
+    );
+    qb.push_bind(vec);
+    qb.push(
+        r#")::double precision AS distance
+            FROM memories
+            WHERE agent_id = "#,
+    );
+    qb.push_bind(agent_id);
+
+    if let Some(mt) = memory_type {
+        qb.push(" AND memory_type = ");
+        qb.push_bind(mt);
+    }
+    if let Some(sid) = session_id {
+        qb.push(" AND session_id = ");
+        qb.push_bind(sid);
+    }
+
+    qb.push(r#")
+        SELECT * FROM ranked WHERE distance < "#);
+    qb.push_bind(threshold);
+    qb.push(" ORDER BY distance LIMIT ");
+    qb.push_bind(limit);
+
+    let rows = qb
+        .build_query_as::<MemorySearchRow>()
+        .fetch_all(&state.db)
+        .await?;
     Ok(rows)
+}
+
+/// Bump the access counter for a list of memory IDs asynchronously.
+/// Call with `tokio::spawn` from the hot path — failures are silent.
+pub async fn bump_access_counts(state: AppState, ids: Vec<Uuid>) {
+    for id in ids {
+        let _ = sqlx::query("UPDATE memories SET access_count = access_count + 1 WHERE id = $1")
+            .bind(id)
+            .execute(&state.db)
+            .await;
+    }
 }
 
 pub async fn list_memories_for_agent(
@@ -113,11 +186,11 @@ pub async fn list_memories_for_agent(
 }
 
 pub async fn delete_memory(state: &AppState, id: Uuid) -> Result<bool> {
-    let result = sqlx::query("DELETE FROM memories WHERE id = $1")
+    let r = sqlx::query("DELETE FROM memories WHERE id = $1")
         .bind(id)
         .execute(&state.db)
         .await?;
-    Ok(result.rows_affected() > 0)
+    Ok(r.rows_affected() > 0)
 }
 
 pub async fn count_memories(state: &AppState) -> Result<i64> {
@@ -199,7 +272,7 @@ pub async fn upsert_entity(
     Ok(())
 }
 
-// ── Relations ─────────────────────────────────────────────────────────────────
+// ── Relations / Knowledge Graph ───────────────────────────────────────────────
 
 pub async fn insert_relation(
     state: &AppState,
@@ -219,4 +292,90 @@ pub async fn insert_relation(
     .execute(&state.db)
     .await?;
     Ok(())
+}
+
+/// Fetch all relations for an agent (used by the graph view).
+pub async fn get_agent_relations(
+    state: &AppState,
+    agent_id: &str,
+    limit: i64,
+) -> Result<Vec<crate::models::RelationRow>> {
+    let rows = sqlx::query_as::<_, crate::models::RelationRow>(
+        r#"
+        SELECT id, agent_id, subject, predicate, object, confidence, created_at
+        FROM memory_graph
+        WHERE agent_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2
+        "#,
+    )
+    .bind(agent_id)
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(rows)
+}
+
+// ── Archival helpers ──────────────────────────────────────────────────────────
+
+/// Returns agent IDs that have at least one archivable L2 memory.
+pub async fn agents_with_archivable_memories(
+    state: &AppState,
+    min_age_days: i64,
+) -> Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        r#"
+        SELECT DISTINCT agent_id
+        FROM memories
+        WHERE tier = 'L2'
+          AND access_count = 0
+          AND created_at < NOW() - INTERVAL '1 day' * $1
+        "#,
+    )
+    .bind(min_age_days)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Fetch up to `limit` archivable L2 memories for one agent.
+pub async fn fetch_archivable_memories(
+    state: &AppState,
+    agent_id: &str,
+    min_age_days: i64,
+    limit: i64,
+) -> Result<Vec<(Uuid, String)>> {
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        r#"
+        SELECT id, content
+        FROM memories
+        WHERE agent_id = $1
+          AND tier = 'L2'
+          AND access_count = 0
+          AND created_at < NOW() - INTERVAL '1 day' * $2
+        ORDER BY created_at ASC
+        LIMIT $3
+        "#,
+    )
+    .bind(agent_id)
+    .bind(min_age_days)
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(rows)
+}
+
+/// Delete a list of memories by ID (used after archival compaction).
+pub async fn delete_memories_by_ids(state: &AppState, ids: &[Uuid]) -> Result<u64> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new("DELETE FROM memories WHERE id IN (");
+    let mut sep = qb.separated(", ");
+    for id in ids {
+        sep.push_bind(id);
+    }
+    qb.push(")");
+    let r = qb.build().execute(&state.db).await?;
+    Ok(r.rows_affected())
 }

@@ -40,7 +40,7 @@ pub struct Memory {
     pub source_turn: Option<i32>,
 }
 
-/// Internal row returned by vector-similarity search (includes computed distance).
+/// Row returned by vector-similarity search — includes the computed distance.
 #[derive(Debug, sqlx::FromRow)]
 pub struct MemorySearchRow {
     pub id: Uuid,
@@ -62,6 +62,18 @@ pub struct WorkingMemory {
     pub summary: Option<String>,
     pub turn_count: i32,
     pub updated_at: DateTime<Utc>,
+}
+
+/// A row from the `memory_graph` table (subject–predicate–object triple).
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct RelationRow {
+    pub id: Uuid,
+    pub agent_id: String,
+    pub subject: String,
+    pub predicate: String,
+    pub object: String,
+    pub confidence: f32,
+    pub created_at: DateTime<Utc>,
 }
 
 // ── LLM extraction output ─────────────────────────────────────────────────────

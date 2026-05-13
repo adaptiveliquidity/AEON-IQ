@@ -8,7 +8,6 @@ use crate::{
 };
 use super::store;
 
-/// The system prompt fed to the extractor LLM.
 pub const EXTRACTION_SYSTEM_PROMPT: &str = r#"You are MemoryOS MMU v2. Analyze the full conversation turn.
 Output ONLY valid JSON. No explanations.
 
@@ -23,7 +22,7 @@ Output ONLY valid JSON. No explanations.
 
 If any fact cannot be directly cited from the transcript, set confidence_low: true."#;
 
-/// Entry point called from a `tokio::spawn`. Never panics; logs errors instead.
+/// Entry point called from `tokio::spawn`. Logs errors, never panics.
 pub async fn extract_and_store(
     state: AppState,
     agent_id: String,
@@ -42,7 +41,12 @@ pub async fn extract_and_store(
     )
     .await
     {
-        error!(agent_id = %agent_id, "Memory extraction failed: {:#}", e);
+        error!(agent_id = %agent_id, "Extraction failed: {:#}", e);
+        state
+            .metrics
+            .extraction_total
+            .with_label_values(&["error"])
+            .inc();
     }
 }
 
@@ -54,31 +58,32 @@ async fn run_extraction(
     assistant_content: &str,
     turn_number: i32,
 ) -> Result<()> {
-    // Build numbered transcript
     let mut lines: Vec<String> = messages
         .iter()
         .enumerate()
         .map(|(i, m)| format!("Line {}: [{}]: {}", i + 1, m.role, m.content))
         .collect();
-    lines.push(format!("Line {}: [assistant]: {}", messages.len() + 1, assistant_content));
+    lines.push(format!(
+        "Line {}: [assistant]: {}",
+        messages.len() + 1,
+        assistant_content
+    ));
     let transcript = lines.join("\n");
 
     info!(agent_id = %agent_id, turn = turn_number, "Running MMU extraction");
 
-    // Call extractor LLM
     let api_key = state.config.openai_api_key.as_deref().unwrap_or("no-key");
     let payload = serde_json::json!({
         "model": state.config.extractor_model,
         "messages": [
             {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": format!("Extract memories from this conversation:\n\n{}", transcript)
-            }
+            {"role": "user", "content": format!("Extract memories from this conversation:\n\n{}", transcript)}
         ],
         "temperature": 0.1,
         "response_format": {"type": "json_object"}
     });
+
+    let start = std::time::Instant::now();
 
     let resp = state
         .http_client
@@ -89,6 +94,9 @@ async fn run_extraction(
         .send()
         .await?;
 
+    let elapsed = start.elapsed().as_secs_f64();
+    state.metrics.extraction_secs.observe(elapsed);
+
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
@@ -98,18 +106,33 @@ async fn run_extraction(
     let body: serde_json::Value = resp.json().await?;
     let raw = body["choices"][0]["message"]["content"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("No content in extractor response: {:?}", body))?;
+        .ok_or_else(|| anyhow::anyhow!("No content in extractor response"))?;
 
     let extraction: ExtractionResult = match serde_json::from_str(raw) {
         Ok(e) => e,
         Err(err) => {
-            warn!(agent_id = %agent_id, "Could not parse extraction JSON: {} — raw: {}", err, &raw[..raw.len().min(500)]);
+            warn!(
+                agent_id = %agent_id,
+                "Could not parse extraction JSON: {} — raw: {}",
+                err,
+                &raw[..raw.len().min(400)]
+            );
+            state
+                .metrics
+                .extraction_total
+                .with_label_values(&["error"])
+                .inc();
             return Ok(());
         }
     };
 
     if extraction.confidence_low {
         info!(agent_id = %agent_id, "Low-confidence extraction — skipping storage");
+        state
+            .metrics
+            .extraction_total
+            .with_label_values(&["low_confidence"])
+            .inc();
         return Ok(());
     }
 
@@ -136,31 +159,46 @@ async fn run_extraction(
         }
     }
 
-    // Store entities
     for entity in &extraction.entities {
-        if let Err(e) =
-            store::upsert_entity(state, agent_id, &entity.name, &entity.entity_type, entity.confidence)
-                .await
+        if let Err(e) = store::upsert_entity(
+            state,
+            agent_id,
+            &entity.name,
+            &entity.entity_type,
+            entity.confidence,
+        )
+        .await
         {
             warn!(agent_id = %agent_id, "Failed to store entity: {}", e);
         }
     }
 
-    // Store relations
     for rel in &extraction.relations {
-        if let Err(e) =
-            store::insert_relation(state, agent_id, &rel.subject, &rel.predicate, &rel.object).await
+        if let Err(e) = store::insert_relation(
+            state,
+            agent_id,
+            &rel.subject,
+            &rel.predicate,
+            &rel.object,
+        )
+        .await
         {
             warn!(agent_id = %agent_id, "Failed to store relation: {}", e);
         }
     }
 
-    // Update L1 working memory
     if let Err(e) =
-        store::upsert_working_memory(state, agent_id, session_id, &extraction.updated_summary).await
+        store::upsert_working_memory(state, agent_id, session_id, &extraction.updated_summary)
+            .await
     {
         warn!(agent_id = %agent_id, "Failed to update working memory: {}", e);
     }
+
+    state
+        .metrics
+        .extraction_total
+        .with_label_values(&["ok"])
+        .inc();
 
     info!(
         agent_id = %agent_id,
@@ -173,9 +211,8 @@ async fn run_extraction(
     Ok(())
 }
 
-// ── Response content parsers ──────────────────────────────────────────────────
+// ── Content parsers ───────────────────────────────────────────────────────────
 
-/// Extracts the assistant text from a streaming SSE response body.
 pub fn parse_sse_content(data: &[u8]) -> String {
     let text = String::from_utf8_lossy(data);
     let mut content = String::new();
@@ -194,7 +231,6 @@ pub fn parse_sse_content(data: &[u8]) -> String {
     content
 }
 
-/// Extracts the assistant text from a non-streaming JSON response body.
 pub fn parse_json_content(data: &[u8]) -> String {
     serde_json::from_slice::<serde_json::Value>(data)
         .ok()

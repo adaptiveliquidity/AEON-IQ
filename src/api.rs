@@ -9,11 +9,11 @@ use uuid::Uuid;
 use crate::{
     embeddings::embed_text,
     memory::store,
-    models::Memory,
+    models::{Memory, RelationRow},
     AppState,
 };
 
-// ── Response shapes ───────────────────────────────────────────────────────────
+// ── Shared response shapes ────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct AgentInfo {
@@ -62,12 +62,10 @@ pub struct MemoryListResponse {
 pub struct StatsResponse {
     pub agent_count: i64,
     pub memory_count: i64,
-    /// Rough estimate: each stored memory avoids re-sending ~200 tokens per
-    /// retrieval across the lifetime of the agent.
     pub tokens_saved_estimate: i64,
 }
 
-// ── Query params ──────────────────────────────────────────────────────────────
+// ── Query params / bodies ─────────────────────────────────────────────────────
 
 #[derive(Deserialize, Default)]
 pub struct Pagination {
@@ -75,12 +73,71 @@ pub struct Pagination {
     pub offset: Option<i64>,
 }
 
-// ── Request bodies ────────────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 pub struct CreateMemoryBody {
     pub content: String,
     pub memory_type: Option<String>,
+}
+
+// ── Semantic search types ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct MemorySearchRequest {
+    pub agent_id: String,
+    pub query: String,
+    /// Maximum results (default 20, max 100).
+    pub limit: Option<i64>,
+    /// Cosine distance upper bound — lower = more similar (default 0.80).
+    pub threshold: Option<f64>,
+    /// Filter by memory_type (episodic | semantic | procedural).
+    pub memory_type: Option<String>,
+    /// Filter to a specific session.
+    pub session_id: Option<String>,
+    /// When true, include subject–predicate–object relations in the response.
+    pub include_relations: Option<bool>,
+}
+
+#[derive(Serialize)]
+pub struct SearchResult {
+    pub id: String,
+    pub content: String,
+    pub memory_type: String,
+    pub confidence: f32,
+    /// 1.0 = identical, 0.0 = maximally dissimilar.
+    pub similarity: f32,
+    pub created_at: String,
+    pub source_turn: Option<i32>,
+    pub session_id: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RelationDto {
+    pub id: String,
+    pub subject: String,
+    pub predicate: String,
+    pub object: String,
+    pub confidence: f32,
+    pub created_at: String,
+}
+
+impl From<RelationRow> for RelationDto {
+    fn from(r: RelationRow) -> Self {
+        Self {
+            id: r.id.to_string(),
+            subject: r.subject,
+            predicate: r.predicate,
+            object: r.object,
+            confidence: r.confidence,
+            created_at: r.created_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct MemorySearchResponse {
+    pub results: Vec<SearchResult>,
+    pub relations: Vec<RelationDto>,
+    pub total: usize,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -150,7 +207,7 @@ pub async fn create_memory(
 
     let embedding = embed_text(&state, &body.content)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Embedding failed: {}", e)))?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Embedding: {}", e)))?;
 
     let id = store::store_memory(
         &state,
@@ -180,6 +237,69 @@ pub async fn delete_memory(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(serde_json::json!({ "deleted": deleted })))
+}
+
+/// POST /api/v1/memories/search
+/// Embed the query text, run pgvector HNSW search, return ranked results + optional graph data.
+pub async fn search_memories_semantic(
+    State(state): State<AppState>,
+    Json(req): Json<MemorySearchRequest>,
+) -> Result<Json<MemorySearchResponse>, (StatusCode, String)> {
+    let limit = req.limit.unwrap_or(20).min(100);
+    let threshold = req.threshold.unwrap_or(state.config.retrieval_threshold);
+
+    let embedding = embed_text(&state, &req.query)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Embedding: {}", e)))?;
+
+    let search_start = std::time::Instant::now();
+    let rows = store::search_memories_filtered(
+        &state,
+        &req.agent_id,
+        &embedding,
+        limit,
+        threshold,
+        req.memory_type.as_deref(),
+        req.session_id.as_deref(),
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    state
+        .metrics
+        .vector_search_secs
+        .observe(search_start.elapsed().as_secs_f64());
+
+    let relations: Vec<RelationDto> = if req.include_relations.unwrap_or(false) {
+        store::get_agent_relations(&state, &req.agent_id, 200)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(RelationDto::from)
+            .collect()
+    } else {
+        vec![]
+    };
+
+    let total = rows.len();
+    let results = rows
+        .into_iter()
+        .map(|r| SearchResult {
+            id: r.id.to_string(),
+            content: r.content,
+            memory_type: r.memory_type,
+            confidence: r.confidence,
+            similarity: (1.0 - r.distance.unwrap_or(1.0)) as f32,
+            created_at: r.created_at.to_rfc3339(),
+            source_turn: r.source_turn,
+            session_id: r.session_id,
+        })
+        .collect();
+
+    Ok(Json(MemorySearchResponse {
+        results,
+        relations,
+        total,
+    }))
 }
 
 pub async fn get_stats(

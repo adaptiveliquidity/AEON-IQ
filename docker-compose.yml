@@ -25,13 +25,17 @@ services:
     ports:
       - "8080:8080"
     environment:
-      DATABASE_URL:       postgresql://memoryos:memoryos_secret@postgres:5432/memoryos
-      UPSTREAM_BASE_URL:  ${UPSTREAM_BASE_URL:-https://api.openai.com}
-      OPENAI_API_KEY:     ${OPENAI_API_KEY}
-      EXTRACTOR_MODEL:    ${EXTRACTOR_MODEL:-gpt-4o-mini}
-      EMBEDDING_MODEL:    ${EMBEDDING_MODEL:-text-embedding-3-small}
-      RUST_LOG:           memoryos_kernel=info,tower_http=info
-      PORT:               8080
+      DATABASE_URL:               postgresql://memoryos:memoryos_secret@postgres:5432/memoryos
+      UPSTREAM_BASE_URL:          ${UPSTREAM_BASE_URL:-https://api.openai.com}
+      OPENAI_API_KEY:             ${OPENAI_API_KEY}
+      EXTRACTOR_MODEL:            ${EXTRACTOR_MODEL:-gpt-4o-mini}
+      EMBEDDING_MODEL:            ${EMBEDDING_MODEL:-text-embedding-3-small}
+      RETRIEVAL_THRESHOLD:        ${RETRIEVAL_THRESHOLD:-0.80}
+      ARCHIVAL_INTERVAL_HOURS:    ${ARCHIVAL_INTERVAL_HOURS:-24}
+      ARCHIVAL_MIN_AGE_DAYS:      ${ARCHIVAL_MIN_AGE_DAYS:-7}
+      ARCHIVAL_MIN_MEMORIES:      ${ARCHIVAL_MIN_MEMORIES:-10}
+      RUST_LOG:                   memoryos_kernel=info,tower_http=info
+      PORT:                       8080
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,5 +60,46 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ── Prometheus ────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      memoryos:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Grafana ───────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED:        "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE:       Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM:       "false"
+      GF_SECURITY_ADMIN_USER:           admin
+      GF_SECURITY_ADMIN_PASSWORD:       ${GRAFANA_PASSWORD:-memoryos}
+      GF_FEATURE_TOGGLES_ENABLE:        "publicDashboards"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
   postgres_data:
+  prometheus_data:
+  grafana_data:
