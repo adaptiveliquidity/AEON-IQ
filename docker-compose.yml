@@ -1,0 +1,60 @@
+services:
+
+  # ── PostgreSQL + pgvector ──────────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB:       memoryos
+      POSTGRES_USER:     memoryos
+      POSTGRES_PASSWORD: memoryos_secret
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memoryos -d memoryos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── MemoryOS Kernel (Rust proxy) ───────────────────────────────────────────
+  memoryos:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL:       postgresql://memoryos:memoryos_secret@postgres:5432/memoryos
+      UPSTREAM_BASE_URL:  ${UPSTREAM_BASE_URL:-https://api.openai.com}
+      OPENAI_API_KEY:     ${OPENAI_API_KEY}
+      EXTRACTOR_MODEL:    ${EXTRACTOR_MODEL:-gpt-4o-mini}
+      EMBEDDING_MODEL:    ${EMBEDDING_MODEL:-text-embedding-3-small}
+      RUST_LOG:           memoryos_kernel=info,tower_http=info
+      PORT:               8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Dashboard (Next.js) ───────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      BACKEND_URL: http://memoryos:8080
+    depends_on:
+      memoryos:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

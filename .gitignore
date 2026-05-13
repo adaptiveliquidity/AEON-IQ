@@ -1,0 +1,16 @@
+# Rust
+/target
+Cargo.lock
+
+# Environment
+.env
+.env.local
+
+# Dashboard
+dashboard/node_modules
+dashboard/.next
+dashboard/out
+dashboard/.env.local
+
+# Misc
+*.DS_Store
