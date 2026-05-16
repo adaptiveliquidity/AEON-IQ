@@ -105,6 +105,10 @@ pub async fn search_memories(
 /// Full-featured search with optional filters on memory_type and session_id.
 /// The `threshold` is an inclusive upper bound on cosine distance (lower = more similar).
 /// Only live (non-tombstoned) memories are returned.
+///
+/// Decay scoring: `adjusted_dist = cosine_dist * (1 + decay_rate * days_stale)`
+/// where `days_stale` is days since last access (or creation if never accessed).
+/// When `decay_rate = 0.0` the formula collapses to pure cosine similarity.
 pub async fn search_memories_filtered(
     state: &AppState,
     agent_id: &str,
@@ -115,21 +119,24 @@ pub async fn search_memories_filtered(
     session_id: Option<&str>,
 ) -> Result<Vec<MemorySearchRow>> {
     let vec = Vector::from(embedding.to_vec());
+    let decay_rate = state.config.memory_decay_rate;
 
-    // CTE pre-computes the distance so we can ORDER and filter without binding
-    // the vector twice. archived_at IS NULL excludes tombstoned memories.
+    // Two-CTE pattern:
+    //   base  — computes cosine distance and days_stale without binding the
+    //           vector twice
+    //   ranked — applies decay penalty; outer query filters and orders
     let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
-        r#"
-        WITH ranked AS (
-            SELECT id, agent_id, session_id, content, memory_type, confidence, provenance,
-                   created_at, source_turn,
-                   (embedding <=> "#,
+        r#"WITH base AS (
+    SELECT id, agent_id, session_id, content, memory_type, confidence, provenance,
+           created_at, source_turn,
+           (embedding <=> "#,
     );
     qb.push_bind(vec);
     qb.push(
-        r#")::double precision AS distance
-            FROM memories
-            WHERE agent_id = "#,
+        r#")::double precision AS cosine_dist,
+           EXTRACT(EPOCH FROM (NOW() - COALESCE(last_accessed_at, created_at))) / 86400.0 AS days_stale
+    FROM memories
+    WHERE agent_id = "#,
     );
     qb.push_bind(agent_id);
     qb.push(" AND archived_at IS NULL");
@@ -143,8 +150,15 @@ pub async fn search_memories_filtered(
         qb.push_bind(sid);
     }
 
-    qb.push(r#")
-        SELECT * FROM ranked WHERE distance < "#);
+    qb.push("),\nranked AS (\n    SELECT *, cosine_dist * (1.0 + ");
+    qb.push_bind(decay_rate);
+    qb.push(
+        r#" * days_stale) AS distance FROM base
+)
+SELECT id, agent_id, session_id, content, memory_type, confidence, provenance,
+       created_at, source_turn, distance
+FROM ranked WHERE distance < "#,
+    );
     qb.push_bind(threshold);
     qb.push(" ORDER BY distance LIMIT ");
     qb.push_bind(limit);
@@ -156,14 +170,16 @@ pub async fn search_memories_filtered(
     Ok(rows)
 }
 
-/// Bump the access counter for a list of memory IDs asynchronously.
-/// Call with `tokio::spawn` from the hot path — failures are silent.
+/// Bump the access counter and record the access timestamp for a list of IDs.
+/// Called via `tokio::spawn` from the hot path — failures are silent.
 pub async fn bump_access_counts(state: AppState, ids: Vec<Uuid>) {
     for id in ids {
-        let _ = sqlx::query("UPDATE memories SET access_count = access_count + 1 WHERE id = $1")
-            .bind(id)
-            .execute(&state.db)
-            .await;
+        let _ = sqlx::query(
+            "UPDATE memories SET access_count = access_count + 1, last_accessed_at = NOW() WHERE id = $1",
+        )
+        .bind(id)
+        .execute(&state.db)
+        .await;
     }
 }
 

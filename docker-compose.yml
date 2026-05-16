@@ -38,6 +38,8 @@ services:
       UPSTREAM_PROVIDER:          ${UPSTREAM_PROVIDER:-openai}
       RATE_LIMIT_RPM:             ${RATE_LIMIT_RPM:-0}
       RATE_LIMIT_BURST:           ${RATE_LIMIT_BURST:-20}
+      MEMORY_DECAY_RATE:          ${MEMORY_DECAY_RATE:-0.0}
+      EMBEDDING_BASE_URL:         ${EMBEDDING_BASE_URL:-https://api.openai.com}
       RUST_LOG:                   memoryos_kernel=info,tower_http=info
       PORT:                       8080
     depends_on:

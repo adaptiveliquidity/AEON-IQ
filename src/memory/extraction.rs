@@ -2,7 +2,7 @@ use anyhow::Result;
 use tracing::{error, info, warn};
 
 use crate::{
-    embeddings::embed_text,
+    embeddings::embed_texts,
     models::{ExtractionResult, Message},
     AppState,
 };
@@ -156,32 +156,34 @@ async fn run_extraction(
         return Ok(());
     }
 
-    // ── Store facts with provenance-adjusted confidence ───────────────────────
+    // ── Batch-embed all facts in one API call, then store ─────────────────────
     //
     // Issue 4 fix: assistant_derived and inferred facts are stored with
     // a lower confidence cap so they don't dominate future retrievals.
-    for fact in &extraction.facts {
-        let confidence = adjusted_confidence(&fact.provenance, fact.confidence);
-
-        match embed_text(state, &fact.content).await {
-            Ok(emb) => {
-                if let Err(e) = store::store_memory(
-                    state,
-                    agent_id,
-                    Some(session_id),
-                    &fact.content,
-                    &extraction.memory_type,
-                    confidence,
-                    emb,
-                    Some(turn_number),
-                    &fact.provenance,
-                )
-                .await
-                {
-                    warn!(agent_id = %agent_id, "Failed to store fact: {}", e);
+    if !extraction.facts.is_empty() {
+        let texts: Vec<&str> = extraction.facts.iter().map(|f| f.content.as_str()).collect();
+        match embed_texts(state, &texts).await {
+            Ok(embeddings) => {
+                for (fact, emb) in extraction.facts.iter().zip(embeddings) {
+                    let confidence = adjusted_confidence(&fact.provenance, fact.confidence);
+                    if let Err(e) = store::store_memory(
+                        state,
+                        agent_id,
+                        Some(session_id),
+                        &fact.content,
+                        &extraction.memory_type,
+                        confidence,
+                        emb,
+                        Some(turn_number),
+                        &fact.provenance,
+                    )
+                    .await
+                    {
+                        warn!(agent_id = %agent_id, "Failed to store fact: {}", e);
+                    }
                 }
             }
-            Err(e) => warn!(agent_id = %agent_id, "Failed to embed fact: {}", e),
+            Err(e) => warn!(agent_id = %agent_id, "Batch embedding failed: {}", e),
         }
     }
 

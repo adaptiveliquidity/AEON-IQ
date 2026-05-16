@@ -12,6 +12,10 @@ pub struct Config {
     pub openai_api_key: Option<String>,
     pub embedding_model: String,
     pub embedding_dimension: i32,
+    /// Base URL for the embeddings endpoint.  Defaults to `upstream_base_url`.
+    /// Override when the LLM provider (e.g. Anthropic) doesn't serve embeddings
+    /// and you want to point at OpenAI or a local model instead.
+    pub embedding_base_url: String,
 
     // ── Extraction (MMU) ──────────────────────────────────────────────────────
     pub extractor_model: String,
@@ -20,6 +24,10 @@ pub struct Config {
     // ── Retrieval ─────────────────────────────────────────────────────────────
     /// Cosine distance upper bound; memories with distance ≥ this are dropped.
     pub retrieval_threshold: f64,
+    /// Decay rate per day applied to cosine distance during retrieval.
+    /// `adjusted_dist = cosine_dist * (1 + decay_rate * days_since_last_access)`
+    /// Set to 0.0 (default) to disable decay and use pure cosine similarity.
+    pub memory_decay_rate: f64,
 
     // ── Management API security ───────────────────────────────────────────────
     /// When set, all /api/v1/* routes require this key via
@@ -66,6 +74,11 @@ impl Config {
                 .unwrap_or_else(|_| "1536".to_string())
                 .parse()
                 .context("EMBEDDING_DIMENSION must be a number")?,
+            embedding_base_url: std::env::var("EMBEDDING_BASE_URL")
+                .unwrap_or_else(|_| {
+                    std::env::var("UPSTREAM_BASE_URL")
+                        .unwrap_or_else(|_| "https://api.openai.com".to_string())
+                }),
 
             extractor_model: std::env::var("EXTRACTOR_MODEL")
                 .unwrap_or_else(|_| "gpt-4o-mini".to_string()),
@@ -76,6 +89,10 @@ impl Config {
                 .unwrap_or_else(|_| "0.80".to_string())
                 .parse()
                 .context("RETRIEVAL_THRESHOLD must be a float")?,
+            memory_decay_rate: std::env::var("MEMORY_DECAY_RATE")
+                .unwrap_or_else(|_| "0.0".to_string())
+                .parse()
+                .context("MEMORY_DECAY_RATE must be a float")?,
 
             management_api_key: std::env::var("MANAGEMENT_API_KEY").ok(),
 

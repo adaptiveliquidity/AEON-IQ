@@ -16,7 +16,7 @@
 use anyhow::Result;
 use tracing::{error, info, warn};
 
-use crate::{embeddings::embed_text, memory::store, AppState};
+use crate::{embeddings::embed_texts, memory::store, AppState};
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -130,11 +130,12 @@ async fn archive_agent(
         return Ok(());
     }
 
-    // ── Store as L3 memories ──────────────────────────────────────────────────
+    // ── Batch-embed all compressed facts, then store as L3 ───────────────────
     let stored_count = compressed.len();
-    for fact in &compressed {
-        match embed_text(state, fact).await {
-            Ok(emb) => {
+    let fact_refs: Vec<&str> = compressed.iter().map(|s| s.as_str()).collect();
+    match embed_texts(state, &fact_refs).await {
+        Ok(embeddings) => {
+            for (fact, emb) in compressed.iter().zip(embeddings) {
                 if let Err(e) = store::store_memory_with_tier(
                     state,
                     agent_id,
@@ -152,7 +153,10 @@ async fn archive_agent(
                     warn!(agent_id = %agent_id, "Failed to store L3 fact: {}", e);
                 }
             }
-            Err(e) => warn!(agent_id = %agent_id, "Failed to embed L3 fact: {}", e),
+        }
+        Err(e) => {
+            warn!(agent_id = %agent_id, "Batch embedding failed for L3 facts: {}", e);
+            return Ok(());
         }
     }
 
