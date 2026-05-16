@@ -14,3 +14,4 @@ dashboard/.env.local
 
 # Misc
 *.DS_Store
+dashboard/tsconfig.tsbuildinfo
