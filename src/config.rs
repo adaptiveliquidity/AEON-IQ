@@ -21,10 +21,9 @@ pub struct Config {
     /// Cosine distance upper bound; memories with distance ≥ this are dropped.
     pub retrieval_threshold: f64,
 
-    // ── Management API security (Issue 2) ────────────────────────────────────
+    // ── Management API security ───────────────────────────────────────────────
     /// When set, all /api/v1/* routes require this key via
     /// X-Management-Key or Authorization: Bearer headers.
-    /// Leave unset for local-dev convenience.
     pub management_api_key: Option<String>,
 
     // ── LTM Archival ──────────────────────────────────────────────────────────
@@ -35,6 +34,17 @@ pub struct Config {
     pub archival_min_age_days: u64,
     /// Minimum candidate count per agent before triggering compaction.
     pub archival_min_memories: usize,
+
+    // ── Provider ──────────────────────────────────────────────────────────────
+    /// Upstream LLM provider: "openai" (default) | "anthropic" | "gemini".
+    /// Controls request translation and response parsing.
+    pub upstream_provider: String,
+
+    // ── Rate limiting ─────────────────────────────────────────────────────────
+    /// Max proxy requests per minute per agent. 0 = disabled.
+    pub rate_limit_rpm: u32,
+    /// Token bucket burst size (max instantaneous quota).
+    pub rate_limit_burst: u32,
 }
 
 impl Config {
@@ -81,6 +91,18 @@ impl Config {
                 .unwrap_or_else(|_| "10".to_string())
                 .parse()
                 .context("ARCHIVAL_MIN_MEMORIES must be a number")?,
+
+            upstream_provider: std::env::var("UPSTREAM_PROVIDER")
+                .unwrap_or_else(|_| "openai".to_string()),
+
+            rate_limit_rpm: std::env::var("RATE_LIMIT_RPM")
+                .unwrap_or_else(|_| "0".to_string())
+                .parse()
+                .context("RATE_LIMIT_RPM must be a non-negative integer")?,
+            rate_limit_burst: std::env::var("RATE_LIMIT_BURST")
+                .unwrap_or_else(|_| "20".to_string())
+                .parse()
+                .context("RATE_LIMIT_BURST must be a non-negative integer")?,
         })
     }
 }

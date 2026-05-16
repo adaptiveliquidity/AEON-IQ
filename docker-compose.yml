@@ -35,6 +35,9 @@ services:
       ARCHIVAL_MIN_AGE_DAYS:      ${ARCHIVAL_MIN_AGE_DAYS:-7}
       ARCHIVAL_MIN_MEMORIES:      ${ARCHIVAL_MIN_MEMORIES:-10}
       MANAGEMENT_API_KEY:         ${MANAGEMENT_API_KEY:-}
+      UPSTREAM_PROVIDER:          ${UPSTREAM_PROVIDER:-openai}
+      RATE_LIMIT_RPM:             ${RATE_LIMIT_RPM:-0}
+      RATE_LIMIT_BURST:           ${RATE_LIMIT_BURST:-20}
       RUST_LOG:                   memoryos_kernel=info,tower_http=info
       PORT:                       8080
     depends_on:

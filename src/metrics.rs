@@ -1,7 +1,7 @@
 use axum::{body::Body, extract::State, http::StatusCode, response::Response};
-use once_cell::sync::OnceCell;
 use prometheus::{
-    CounterVec, Encoder, Histogram, HistogramOpts, HistogramVec, Opts, Registry, TextEncoder,
+    Counter, CounterVec, Encoder, Histogram, HistogramOpts, HistogramVec, Opts, Registry,
+    TextEncoder,
 };
 use std::sync::Arc;
 
@@ -37,6 +37,9 @@ pub struct Metrics {
 
     /// Number of memories compacted per archival cycle.
     pub archival_compacted: Histogram,
+
+    /// Requests rejected by the per-agent rate limiter.
+    pub rate_limited_total: Counter,
 }
 
 impl Metrics {
@@ -119,6 +122,11 @@ impl Metrics {
             .buckets(count_buckets),
         )?);
 
+        let rate_limited_total = reg!(Counter::with_opts(Opts::new(
+            "memoryos_rate_limited_total",
+            "Requests rejected by the per-agent rate limiter",
+        ))?);
+
         Ok(Self {
             registry: Arc::new(reg),
             requests_total,
@@ -130,6 +138,7 @@ impl Metrics {
             vector_search_secs,
             archival_total,
             archival_compacted,
+            rate_limited_total,
         })
     }
 

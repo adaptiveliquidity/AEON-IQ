@@ -54,6 +54,7 @@ bytes   = "1"
 
 # Config
 dotenvy = "0.15"
+dashmap  = "6"
 
 [profile.release]
 opt-level       = 3

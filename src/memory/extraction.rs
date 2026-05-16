@@ -241,33 +241,3 @@ fn adjusted_confidence(provenance: &str, raw: f64) -> f32 {
     raw.min(cap) as f32
 }
 
-// ── Response content parsers ──────────────────────────────────────────────────
-
-pub fn parse_sse_content(data: &[u8]) -> String {
-    let text = String::from_utf8_lossy(data);
-    let mut content = String::new();
-    for line in text.lines() {
-        if let Some(payload) = line.strip_prefix("data: ") {
-            if payload == "[DONE]" {
-                continue;
-            }
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(payload) {
-                if let Some(c) = json["choices"][0]["delta"]["content"].as_str() {
-                    content.push_str(c);
-                }
-            }
-        }
-    }
-    content
-}
-
-pub fn parse_json_content(data: &[u8]) -> String {
-    serde_json::from_slice::<serde_json::Value>(data)
-        .ok()
-        .and_then(|v| {
-            v["choices"][0]["message"]["content"]
-                .as_str()
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_default()
-}

@@ -7,7 +7,9 @@ mod embeddings;
 mod memory;
 mod metrics;
 mod models;
+mod providers;
 mod proxy;
+mod rate_limit;
 
 use std::sync::Arc;
 
@@ -24,10 +26,12 @@ pub use db::DbPool;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub config:      Arc<Config>,
-    pub db:          DbPool,
-    pub http_client: reqwest::Client,
-    pub metrics:     Arc<metrics::Metrics>,
+    pub config:       Arc<Config>,
+    pub db:           DbPool,
+    pub http_client:  reqwest::Client,
+    pub metrics:      Arc<metrics::Metrics>,
+    pub provider:     providers::Provider,
+    pub rate_limiter: Arc<rate_limit::RateLimiter>,
 }
 
 #[tokio::main]
@@ -52,6 +56,16 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    let provider = providers::Provider::from_str(&config.upstream_provider);
+    tracing::info!("Upstream provider: {:?}", provider);
+
+    if config.rate_limit_rpm > 0 {
+        tracing::info!(
+            "Rate limiting enabled: {} RPM per agent, burst {}",
+            config.rate_limit_rpm, config.rate_limit_burst,
+        );
+    }
+
     let db = db::connect(&config.database_url).await?;
     db::run_migrations(&db).await?;
     tracing::info!("Database migrations applied");
@@ -61,11 +75,18 @@ async fn main() -> anyhow::Result<()> {
         .build()?;
 
     let m = metrics::Metrics::new()?;
+    let rate_limiter = Arc::new(rate_limit::RateLimiter::new(
+        config.rate_limit_rpm,
+        config.rate_limit_burst,
+    ));
+
     let state = AppState {
         config:      config.clone(),
         db,
         http_client,
         metrics:     Arc::new(m),
+        provider,
+        rate_limiter,
     };
 
     // ── Background jobs ───────────────────────────────────────────────────────
@@ -73,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(archival::run_job(state.clone()));
     }
 
-    // ── Management sub-router (Issue 2: authenticated) ────────────────────────
+    // ── Management sub-router (authenticated) ─────────────────────────────────
     let management = Router::new()
         .route("/agents",                     get(api::list_agents))
         .route("/agents/:agent_id/memories",  get(api::list_memories))
@@ -88,15 +109,11 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Root router ───────────────────────────────────────────────────────────
     let app = Router::new()
-        // OpenAI-compatible proxy (no management auth — uses upstream key)
         .route("/v1/chat/completions", post(proxy::handle_chat_completions))
         .route("/v1/models",           get(proxy::handle_models))
-        // Management API (authenticated)
         .nest("/api/v1", management)
-        // Observability (public — typically behind internal network)
         .route("/metrics", get(metrics::handle_metrics))
         .route("/health",  get(|| async { "OK" }))
-        // Outer middleware stack
         .layer(middleware::from_fn_with_state(
             state.clone(),
             metrics::track_request,
