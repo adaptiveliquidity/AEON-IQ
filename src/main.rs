@@ -1,5 +1,6 @@
 mod api;
 mod archival;
+mod auth;
 mod config;
 mod db;
 mod embeddings;
@@ -44,6 +45,13 @@ async fn main() -> anyhow::Result<()> {
     let config = Arc::new(Config::from_env()?);
     tracing::info!("MemoryOS Kernel starting on port {}", config.port);
 
+    if config.management_api_key.is_none() {
+        tracing::warn!(
+            "MANAGEMENT_API_KEY is not set — management endpoints are unauthenticated. \
+             Set this env var before exposing the service publicly."
+        );
+    }
+
     let db = db::connect(&config.database_url).await?;
     db::run_migrations(&db).await?;
     tracing::info!("Database migrations applied");
@@ -60,27 +68,35 @@ async fn main() -> anyhow::Result<()> {
         metrics:     Arc::new(m),
     };
 
-    // ── Start background jobs ─────────────────────────────────────────────────
+    // ── Background jobs ───────────────────────────────────────────────────────
     if config.archival_interval_hours > 0 {
         tokio::spawn(archival::run_job(state.clone()));
     }
 
-    // ── Build router ──────────────────────────────────────────────────────────
+    // ── Management sub-router (Issue 2: authenticated) ────────────────────────
+    let management = Router::new()
+        .route("/agents",                     get(api::list_agents))
+        .route("/agents/:agent_id/memories",  get(api::list_memories))
+        .route("/agents/:agent_id/memories",  post(api::create_memory))
+        .route("/memories/search",            post(api::search_memories_semantic))
+        .route("/memories/:id",               delete(api::delete_memory))
+        .route("/stats",                      get(api::get_stats))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::check_management_key,
+        ));
+
+    // ── Root router ───────────────────────────────────────────────────────────
     let app = Router::new()
-        // OpenAI-compatible proxy
+        // OpenAI-compatible proxy (no management auth — uses upstream key)
         .route("/v1/chat/completions", post(proxy::handle_chat_completions))
-        .route("/v1/models", get(proxy::handle_models))
-        // Management REST API
-        .route("/api/v1/agents",                      get(api::list_agents))
-        .route("/api/v1/agents/:agent_id/memories",   get(api::list_memories))
-        .route("/api/v1/agents/:agent_id/memories",   post(api::create_memory))
-        .route("/api/v1/memories/search",             post(api::search_memories_semantic))
-        .route("/api/v1/memories/:id",                delete(api::delete_memory))
-        .route("/api/v1/stats",                       get(api::get_stats))
-        // Observability
+        .route("/v1/models",           get(proxy::handle_models))
+        // Management API (authenticated)
+        .nest("/api/v1", management)
+        // Observability (public — typically behind internal network)
         .route("/metrics", get(metrics::handle_metrics))
         .route("/health",  get(|| async { "OK" }))
-        // Middleware (order matters: outer = first to execute)
+        // Outer middleware stack
         .layer(middleware::from_fn_with_state(
             state.clone(),
             metrics::track_request,

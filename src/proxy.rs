@@ -57,7 +57,7 @@ pub async fn handle_chat_completions(
         .iter()
         .rev()
         .find(|m| m.role == "user")
-        .map(|m| m.content.clone())
+        .map(|m| m.content_text())
         .unwrap_or_default();
 
     let original_messages = chat_req.messages.clone();
@@ -90,7 +90,7 @@ pub async fn handle_chat_completions(
                             0,
                             Message {
                                 role: "system".to_string(),
-                                content: injection,
+                                content: injection.into(),
                                 name: None,
                             },
                         );

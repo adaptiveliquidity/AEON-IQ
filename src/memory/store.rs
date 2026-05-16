@@ -39,6 +39,7 @@ pub async fn store_memory(
     confidence: f32,
     embedding: Vec<f32>,
     source_turn: Option<i32>,
+    provenance: &str,
 ) -> Result<Uuid> {
     store_memory_with_tier(
         state,
@@ -50,6 +51,7 @@ pub async fn store_memory(
         embedding,
         source_turn,
         "L2",
+        provenance,
     )
     .await
 }
@@ -64,13 +66,14 @@ pub async fn store_memory_with_tier(
     embedding: Vec<f32>,
     source_turn: Option<i32>,
     tier: &str,
+    provenance: &str,
 ) -> Result<Uuid> {
     let vec = Vector::from(embedding);
     let row: (Uuid,) = sqlx::query_as(
         r#"
         INSERT INTO memories
-            (agent_id, session_id, content, memory_type, confidence, embedding, source_turn, tier)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            (agent_id, session_id, content, memory_type, confidence, embedding, source_turn, tier, provenance)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING id
         "#,
     )
@@ -82,6 +85,7 @@ pub async fn store_memory_with_tier(
     .bind(vec)
     .bind(source_turn)
     .bind(tier)
+    .bind(provenance)
     .fetch_one(&state.db)
     .await?;
     Ok(row.0)
@@ -100,6 +104,7 @@ pub async fn search_memories(
 
 /// Full-featured search with optional filters on memory_type and session_id.
 /// The `threshold` is an inclusive upper bound on cosine distance (lower = more similar).
+/// Only live (non-tombstoned) memories are returned.
 pub async fn search_memories_filtered(
     state: &AppState,
     agent_id: &str,
@@ -112,11 +117,11 @@ pub async fn search_memories_filtered(
     let vec = Vector::from(embedding.to_vec());
 
     // CTE pre-computes the distance so we can ORDER and filter without binding
-    // the vector twice.
+    // the vector twice. archived_at IS NULL excludes tombstoned memories.
     let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
         r#"
         WITH ranked AS (
-            SELECT id, agent_id, session_id, content, memory_type, confidence,
+            SELECT id, agent_id, session_id, content, memory_type, confidence, provenance,
                    created_at, source_turn,
                    (embedding <=> "#,
     );
@@ -127,6 +132,7 @@ pub async fn search_memories_filtered(
             WHERE agent_id = "#,
     );
     qb.push_bind(agent_id);
+    qb.push(" AND archived_at IS NULL");
 
     if let Some(mt) = memory_type {
         qb.push(" AND memory_type = ");
@@ -169,10 +175,11 @@ pub async fn list_memories_for_agent(
 ) -> Result<Vec<Memory>> {
     let rows = sqlx::query_as::<_, Memory>(
         r#"
-        SELECT id, agent_id, session_id, content, memory_type, confidence,
+        SELECT id, agent_id, session_id, content, memory_type, confidence, provenance,
                created_at, source_turn
         FROM memories
         WHERE agent_id = $1
+          AND archived_at IS NULL
         ORDER BY created_at DESC
         LIMIT $2 OFFSET $3
         "#,
@@ -195,7 +202,7 @@ pub async fn delete_memory(state: &AppState, id: Uuid) -> Result<bool> {
 
 pub async fn count_memories(state: &AppState) -> Result<i64> {
     let row: (i64,) =
-        sqlx::query_as("SELECT COUNT(*)::bigint FROM memories")
+        sqlx::query_as("SELECT COUNT(*)::bigint FROM memories WHERE archived_at IS NULL")
             .fetch_one(&state.db)
             .await?;
     Ok(row.0)
@@ -329,6 +336,7 @@ pub async fn agents_with_archivable_memories(
         FROM memories
         WHERE tier = 'L2'
           AND access_count = 0
+          AND archived_at IS NULL
           AND created_at < NOW() - INTERVAL '1 day' * $1
         "#,
     )
@@ -352,6 +360,7 @@ pub async fn fetch_archivable_memories(
         WHERE agent_id = $1
           AND tier = 'L2'
           AND access_count = 0
+          AND archived_at IS NULL
           AND created_at < NOW() - INTERVAL '1 day' * $2
         ORDER BY created_at ASC
         LIMIT $3
@@ -365,12 +374,15 @@ pub async fn fetch_archivable_memories(
     Ok(rows)
 }
 
-/// Delete a list of memories by ID (used after archival compaction).
-pub async fn delete_memories_by_ids(state: &AppState, ids: &[Uuid]) -> Result<u64> {
+/// Tombstone a list of memories by setting archived_at = NOW().
+/// Originals remain in the DB for audit/lineage; they are excluded from all
+/// retrieval queries via `AND archived_at IS NULL`.
+pub async fn tombstone_memories(state: &AppState, ids: &[Uuid]) -> Result<u64> {
     if ids.is_empty() {
         return Ok(0);
     }
-    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new("DELETE FROM memories WHERE id IN (");
+    let mut qb: QueryBuilder<sqlx::Postgres> =
+        QueryBuilder::new("UPDATE memories SET archived_at = NOW() WHERE id IN (");
     let mut sep = qb.separated(", ");
     for id in ids {
         sep.push_bind(id);

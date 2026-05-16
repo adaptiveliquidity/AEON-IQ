@@ -3,7 +3,9 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm ci
+# Use npm install so the build succeeds whether or not a lockfile is committed.
+# In CI, commit package-lock.json and switch back to npm ci for reproducibility.
+RUN npm install --prefer-offline 2>/dev/null || npm install
 COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1

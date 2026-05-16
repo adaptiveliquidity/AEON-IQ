@@ -8,7 +8,7 @@ pub struct Config {
     pub port: u16,
 
     // ── Embeddings ────────────────────────────────────────────────────────────
-    /// Server-side key used for embeddings and extraction calls.
+    /// Server-side key for embedding and extraction calls.
     pub openai_api_key: Option<String>,
     pub embedding_model: String,
     pub embedding_dimension: i32,
@@ -18,15 +18,20 @@ pub struct Config {
     pub extractor_base_url: String,
 
     // ── Retrieval ─────────────────────────────────────────────────────────────
-    /// Cosine distance threshold: memories with distance ≥ this value are
-    /// considered irrelevant and filtered out.
+    /// Cosine distance upper bound; memories with distance ≥ this are dropped.
     pub retrieval_threshold: f64,
 
+    // ── Management API security (Issue 2) ────────────────────────────────────
+    /// When set, all /api/v1/* routes require this key via
+    /// X-Management-Key or Authorization: Bearer headers.
+    /// Leave unset for local-dev convenience.
+    pub management_api_key: Option<String>,
+
     // ── LTM Archival ──────────────────────────────────────────────────────────
-    /// How often the archival job runs (hours). 0 = disabled.
+    /// How often the archival job runs in hours. 0 = disabled.
     pub archival_interval_hours: u64,
-    /// L2 memories older than this many days without a retrieval hit
-    /// become candidates for compaction into L3.
+    /// L2 memories older than this many days with zero retrieval hits are
+    /// candidates for compaction into L3.
     pub archival_min_age_days: u64,
     /// Minimum candidate count per agent before triggering compaction.
     pub archival_min_memories: usize,
@@ -61,6 +66,8 @@ impl Config {
                 .unwrap_or_else(|_| "0.80".to_string())
                 .parse()
                 .context("RETRIEVAL_THRESHOLD must be a float")?,
+
+            management_api_key: std::env::var("MANAGEMENT_API_KEY").ok(),
 
             archival_interval_hours: std::env::var("ARCHIVAL_INTERVAL_HOURS")
                 .unwrap_or_else(|_| "24".to_string())

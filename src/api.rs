@@ -33,6 +33,7 @@ pub struct MemoryDto {
     pub content: String,
     pub memory_type: String,
     pub confidence: f32,
+    pub provenance: String,
     pub created_at: String,
     pub session_id: Option<String>,
     pub source_turn: Option<i32>,
@@ -45,6 +46,7 @@ impl From<Memory> for MemoryDto {
             content: m.content,
             memory_type: m.memory_type,
             confidence: m.confidence,
+            provenance: m.provenance,
             created_at: m.created_at.to_rfc3339(),
             session_id: m.session_id,
             source_turn: m.source_turn,
@@ -218,6 +220,7 @@ pub async fn create_memory(
         1.0,
         embedding,
         None,
+        "user_stated",
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;

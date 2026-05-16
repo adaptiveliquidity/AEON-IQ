@@ -7,7 +7,8 @@
 //! 1. Fetches up to 50 such memories.
 //! 2. Asks the extractor LLM to compress them into 3-5 essential facts.
 //! 3. Stores the compressed facts as L3 (`tier = 'L3'`, lower confidence).
-//! 4. Deletes the originals.
+//! 4. Tombstones the originals (sets archived_at = NOW()) — they are retained
+//!    for audit/lineage but excluded from all retrieval queries.
 //!
 //! The job is started via `tokio::spawn(archival::run_job(state))` in `main.rs`
 //! and only runs when `ARCHIVAL_INTERVAL_HOURS > 0`.
@@ -144,6 +145,7 @@ async fn archive_agent(
                     emb,
                     None,
                     "L3",
+                    "inferred",
                 )
                 .await
                 {
@@ -154,20 +156,20 @@ async fn archive_agent(
         }
     }
 
-    // ── Delete originals ──────────────────────────────────────────────────────
+    // ── Tombstone originals (non-destructive) ─────────────────────────────────
     let ids: Vec<uuid::Uuid> = candidates.iter().map(|(id, _)| *id).collect();
-    let deleted = store::delete_memories_by_ids(state, &ids).await?;
+    let tombstoned = store::tombstone_memories(state, &ids).await?;
 
     state
         .metrics
         .archival_compacted
-        .observe(deleted as f64);
+        .observe(tombstoned as f64);
 
     info!(
         agent_id = %agent_id,
         original = count,
         compressed = stored_count,
-        deleted,
+        tombstoned,
         "L2→L3 compaction complete"
     );
 
