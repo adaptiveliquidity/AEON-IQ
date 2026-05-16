@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
-
-const BACKEND = process.env.BACKEND_URL ?? "http://localhost:8080";
+import { auth } from "@/auth";
+import { backendUrl, mgmtHeaders } from "@/lib/backend";
 
 export async function GET() {
+  const session = await auth();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
-    const res = await fetch(`${BACKEND}/api/v1/agents`, { cache: "no-store" });
+    const res = await fetch(backendUrl("/api/v1/agents"), {
+      cache: "no-store",
+      headers: mgmtHeaders(),
+    });
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
   } catch (err) {

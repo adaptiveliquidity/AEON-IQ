@@ -1,18 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@/auth";
+import { backendUrl, mgmtHeaders } from "@/lib/backend";
 
-const BACKEND = process.env.BACKEND_URL ?? "http://localhost:8080";
+type Ctx = { params: Promise<{ id: string }> };
 
-export async function DELETE(
-  _req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function DELETE(req: NextRequest, { params }: Ctx) {
+  const session = await auth();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const { id } = await params;
   try {
-    const res = await fetch(`${BACKEND}/api/v1/memories/${encodeURIComponent(id)}`, {
+    const res = await fetch(backendUrl(`/api/v1/memories/${encodeURIComponent(id)}`), {
       method: "DELETE",
+      headers: mgmtHeaders(),
     });
-    const data = await res.json();
-    return NextResponse.json(data, { status: res.status });
+    return NextResponse.json(await res.json(), { status: res.status });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 502 });
   }

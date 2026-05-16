@@ -34,6 +34,7 @@ services:
       ARCHIVAL_INTERVAL_HOURS:    ${ARCHIVAL_INTERVAL_HOURS:-24}
       ARCHIVAL_MIN_AGE_DAYS:      ${ARCHIVAL_MIN_AGE_DAYS:-7}
       ARCHIVAL_MIN_MEMORIES:      ${ARCHIVAL_MIN_MEMORIES:-10}
+      MANAGEMENT_API_KEY:         ${MANAGEMENT_API_KEY:-}
       RUST_LOG:                   memoryos_kernel=info,tower_http=info
       PORT:                       8080
     depends_on:
@@ -54,7 +55,13 @@ services:
     ports:
       - "3000:3000"
     environment:
-      BACKEND_URL: http://memoryos:8080
+      BACKEND_URL:              http://memoryos:8080
+      MANAGEMENT_API_KEY:       ${MANAGEMENT_API_KEY:-}
+      AUTH_SECRET:              ${AUTH_SECRET:-change-me-set-AUTH_SECRET-in-env}
+      NEXTAUTH_URL:             ${NEXTAUTH_URL:-http://localhost:3000}
+      DASHBOARD_ADMIN_EMAIL:    ${DASHBOARD_ADMIN_EMAIL:-admin@memoryos.dev}
+      DASHBOARD_ADMIN_PASSWORD: ${DASHBOARD_ADMIN_PASSWORD:-changeme}
+      DASHBOARD_ADMINS:         ${DASHBOARD_ADMINS:-admin@memoryos.dev}
     depends_on:
       memoryos:
         condition: service_healthy

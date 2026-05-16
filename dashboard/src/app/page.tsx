@@ -1,6 +1,6 @@
 import { Bot, Brain, Coins, Zap } from "lucide-react";
-
-const BACKEND = process.env.BACKEND_URL ?? "http://localhost:8080";
+import { auth } from "@/auth";
+import { backendUrl, mgmtHeaders } from "@/lib/backend";
 
 interface Stats {
   agent_count: number;
@@ -20,7 +20,10 @@ interface AgentList {
 
 async function fetchStats(): Promise<Stats> {
   try {
-    const res = await fetch(`${BACKEND}/api/v1/stats`, { cache: "no-store" });
+    const res = await fetch(backendUrl("/api/v1/stats"), {
+      cache: "no-store",
+      headers: mgmtHeaders(),
+    });
     if (!res.ok) throw new Error(res.statusText);
     return res.json();
   } catch {
@@ -30,7 +33,10 @@ async function fetchStats(): Promise<Stats> {
 
 async function fetchAgents(): Promise<AgentList> {
   try {
-    const res = await fetch(`${BACKEND}/api/v1/agents`, { cache: "no-store" });
+    const res = await fetch(backendUrl("/api/v1/agents"), {
+      cache: "no-store",
+      headers: mgmtHeaders(),
+    });
     if (!res.ok) throw new Error(res.statusText);
     return res.json();
   } catch {
@@ -66,8 +72,18 @@ function StatCard({
 }
 
 export default async function OverviewPage() {
+  const session = await auth();
+  const isAdmin   = session?.user?.isAdmin ?? false;
+  const agentId   = session?.user?.agentId ?? "";
+
   const [stats, agents] = await Promise.all([fetchStats(), fetchAgents()]);
 
+  // Non-admins see only their own agent in the table.
+  const visibleAgents: AgentInfo[] = isAdmin
+    ? agents.agents
+    : agents.agents.filter((a) => a.agent_id === agentId);
+
+  const myAgent = visibleAgents.find((a) => a.agent_id === agentId);
   const costSaved = ((stats.tokens_saved_estimate / 1_000_000) * 2.5).toFixed(4);
 
   return (
@@ -75,7 +91,9 @@ export default async function OverviewPage() {
       <div>
         <h1 className="text-2xl font-bold">Overview</h1>
         <p className="text-zinc-400 text-sm mt-1">
-          Real-time view of your MemoryOS Kernel instance
+          {isAdmin
+            ? "Global view of your MemoryOS Kernel instance"
+            : `Your agent: ${agentId}`}
         </p>
       </div>
 
@@ -83,16 +101,16 @@ export default async function OverviewPage() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard
           icon={Bot}
-          label="Active Agents"
-          value={stats.agent_count}
-          sub="unique agent IDs seen"
+          label={isAdmin ? "Active Agents" : "Your Memories"}
+          value={isAdmin ? stats.agent_count : (myAgent?.memory_count ?? 0)}
+          sub={isAdmin ? "unique agent IDs seen" : `agent: ${agentId}`}
           color="bg-blue-500/10 text-blue-400"
         />
         <StatCard
           icon={Brain}
           label="Memories Stored"
           value={stats.memory_count.toLocaleString()}
-          sub="across all agents"
+          sub={isAdmin ? "across all agents" : "total in kernel"}
           color="bg-green-500/10 text-green-400"
         />
         <StatCard
@@ -114,15 +132,29 @@ export default async function OverviewPage() {
       {/* Agent table */}
       <div className="rounded-xl border border-zinc-800 bg-zinc-900 overflow-hidden">
         <div className="px-5 py-4 border-b border-zinc-800">
-          <h2 className="font-semibold">Agents ({agents.total})</h2>
+          <h2 className="font-semibold">
+            {isAdmin ? `Agents (${agents.total})` : "Your Agent"}
+          </h2>
         </div>
-        {agents.agents.length === 0 ? (
+        {visibleAgents.length === 0 ? (
           <div className="px-5 py-12 text-center text-zinc-500 text-sm">
-            No agents yet. Send a request with{" "}
-            <code className="bg-zinc-800 px-1.5 py-0.5 rounded text-xs">
-              x-agent-id
-            </code>{" "}
-            to get started.
+            {isAdmin ? (
+              <>
+                No agents yet. Send a request with{" "}
+                <code className="bg-zinc-800 px-1.5 py-0.5 rounded text-xs">x-agent-id</code>{" "}
+                to get started.
+              </>
+            ) : (
+              <>
+                No memories yet for{" "}
+                <code className="bg-zinc-800 px-1.5 py-0.5 rounded text-xs">{agentId}</code>.
+                Point your OpenAI client at this proxy with{" "}
+                <code className="bg-zinc-800 px-1.5 py-0.5 rounded text-xs">
+                  x-agent-id: {agentId}
+                </code>
+                .
+              </>
+            )}
           </div>
         ) : (
           <table className="w-full text-sm">
@@ -133,7 +165,7 @@ export default async function OverviewPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800">
-              {agents.agents.map((a) => (
+              {visibleAgents.map((a) => (
                 <tr key={a.agent_id} className="hover:bg-zinc-800/50 transition-colors">
                   <td className="px-5 py-3 font-mono text-zinc-300">{a.agent_id}</td>
                   <td className="px-5 py-3 text-right text-green-400 font-semibold">
