@@ -10,6 +10,8 @@ import {
   GitBranch,
   List,
   Lock,
+  Archive,
+  RotateCcw,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -41,8 +43,17 @@ interface RelationDto {
   created_at: string;
 }
 
+interface ArchivedMemoryDto extends MemoryDto {
+  archived_at: string;
+}
+
 interface MemoryList {
   memories: MemoryDto[];
+  total: number;
+}
+
+interface ArchivedMemoryList {
+  memories: ArchivedMemoryDto[];
   total: number;
 }
 
@@ -66,7 +77,7 @@ const PROV_COLORS: Record<string, string> = {
   inferred:          "text-zinc-400",
 };
 
-const TABS = ["browse", "search", "graph"] as const;
+const TABS = ["browse", "search", "graph", "archived"] as const;
 type Tab = (typeof TABS)[number];
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -93,6 +104,9 @@ export default function MemoryExplorerClient({
   const [threshold, setThreshold]       = useState("0.80");
   const [searchData, setSearchData]     = useState<SearchResponse | null>(null);
   const [searching, setSearching]       = useState(false);
+
+  // Archived tab
+  const [archivedData, setArchivedData] = useState<ArchivedMemoryList | null>(null);
 
   const [loading, setLoading]           = useState(false);
   const [error, setError]               = useState<string | null>(null);
@@ -121,12 +135,30 @@ export default function MemoryExplorerClient({
     }
   }, [agentId]);
 
+  const loadArchived = useCallback(async () => {
+    if (!agentId.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/agents/${encodeURIComponent(agentId)}/memories/archived`
+      );
+      if (!res.ok) throw new Error(await res.text());
+      setArchivedData(await res.json());
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [agentId]);
+
   useEffect(() => {
     const t = setTimeout(() => {
       if (agentId && tab === "browse") loadBrowse();
+      if (agentId && tab === "archived") loadArchived();
     }, 400);
     return () => clearTimeout(t);
-  }, [agentId, tab, loadBrowse]);
+  }, [agentId, tab, loadBrowse, loadArchived]);
 
   const handleSemanticSearch = async () => {
     if (!agentId.trim() || !query.trim()) return;
@@ -161,6 +193,11 @@ export default function MemoryExplorerClient({
     if (!confirm("Delete this memory?")) return;
     await fetch(`/api/memories/${id}`, { method: "DELETE" });
     loadBrowse();
+  };
+
+  const handleRestore = async (id: string) => {
+    await fetch(`/api/memories/${id}/restore`, { method: "POST" });
+    loadArchived();
   };
 
   const handleAdd = async () => {
@@ -234,9 +271,10 @@ export default function MemoryExplorerClient({
       <div className="flex gap-1 border-b border-zinc-800 pb-0">
         {(
           [
-            { id: "browse", label: "All Memories",    icon: List },
-            { id: "search", label: "Semantic Search",  icon: Brain },
-            { id: "graph",  label: "Knowledge Graph",  icon: GitBranch },
+            { id: "browse",    label: "All Memories",    icon: List },
+            { id: "search",    label: "Semantic Search",  icon: Brain },
+            { id: "graph",     label: "Knowledge Graph",  icon: GitBranch },
+            { id: "archived",  label: "Archived",         icon: Archive },
           ] as const
         ).map(({ id, label, icon: Icon }) => (
           <button
@@ -430,6 +468,84 @@ export default function MemoryExplorerClient({
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Archived tab ────────────────────────────────────────────────── */}
+      {tab === "archived" && (
+        <div className="space-y-4">
+          <div className="flex justify-end">
+            <button
+              onClick={loadArchived}
+              disabled={loading || !agentId}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-zinc-700 hover:bg-zinc-800 disabled:opacity-40 transition-colors"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+              Refresh
+            </button>
+          </div>
+          {!agentId ? (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-12 text-center text-zinc-500 text-sm">
+              Enter an Agent ID above to view its archived memories.
+            </div>
+          ) : loading ? (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-12 text-center text-zinc-500 text-sm animate-pulse">
+              Loading…
+            </div>
+          ) : archivedData && archivedData.memories.length === 0 ? (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-12 text-center text-zinc-500 text-sm">
+              No archived memories for <code className="bg-zinc-800 px-1 rounded">{agentId}</code>.
+              <p className="mt-2 text-zinc-600">Memories are archived automatically by the LTM compaction job.</p>
+            </div>
+          ) : archivedData ? (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 overflow-hidden">
+              <div className="px-5 py-3 border-b border-zinc-800">
+                <span className="text-sm font-semibold">
+                  Archived Memories
+                  <span className="text-zinc-500 font-normal ml-2">
+                    {archivedData.memories.length} shown / {archivedData.total} total
+                  </span>
+                </span>
+              </div>
+              <div className="divide-y divide-zinc-800">
+                {archivedData.memories.map((m) => (
+                  <div key={m.id} className="px-5 py-4 hover:bg-zinc-800/40 transition-colors group">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-zinc-400 leading-relaxed">{m.content}</p>
+                        <div className="flex flex-wrap items-center gap-2 mt-2">
+                          <span className={`text-xs px-2 py-0.5 rounded-full border ${TYPE_COLORS[m.memory_type] ?? "bg-zinc-700 text-zinc-300 border-zinc-600"}`}>
+                            {m.memory_type}
+                          </span>
+                          <span className={`text-xs ${PROV_COLORS[m.provenance] ?? "text-zinc-500"}`}>
+                            {m.provenance}
+                          </span>
+                          <ImportanceBadge score={m.importance_score} source={m.importance_source} />
+                          <span className="text-xs text-zinc-500">
+                            conf: {(m.confidence * 100).toFixed(0)}%
+                          </span>
+                          <span className="text-xs text-zinc-500">
+                            created: {new Date(m.created_at).toLocaleString()}
+                          </span>
+                          <span className="text-xs text-amber-600">
+                            archived: {new Date(m.archived_at).toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleRestore(m.id)}
+                        className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1.5 rounded-lg hover:bg-green-500/20 hover:text-green-400 text-zinc-600 transition-all shrink-0 text-xs"
+                        title="Restore memory"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        Restore
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
 

@@ -96,6 +96,23 @@ pub struct Memory {
     pub importance_source: String,
 }
 
+/// A tombstoned memory row — same as `Memory` plus the `archived_at` timestamp.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ArchivedMemory {
+    pub id: Uuid,
+    pub agent_id: String,
+    pub session_id: Option<String>,
+    pub content: String,
+    pub memory_type: String,
+    pub confidence: f32,
+    pub provenance: String,
+    pub created_at: DateTime<Utc>,
+    pub source_turn: Option<i32>,
+    pub importance_score: f32,
+    pub importance_source: String,
+    pub archived_at: DateTime<Utc>,
+}
+
 /// Row returned by vector-similarity search — includes the computed distance.
 #[derive(Debug, sqlx::FromRow)]
 pub struct MemorySearchRow {

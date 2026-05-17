@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     embeddings::embed_text,
     memory::store,
-    models::{Memory, RelationRow},
+    models::{ArchivedMemory, Memory, RelationRow},
     AppState,
 };
 
@@ -61,6 +61,45 @@ impl From<Memory> for MemoryDto {
 #[derive(Serialize)]
 pub struct MemoryListResponse {
     pub memories: Vec<MemoryDto>,
+    pub total: i64,
+}
+
+#[derive(Serialize)]
+pub struct ArchivedMemoryDto {
+    pub id: String,
+    pub content: String,
+    pub memory_type: String,
+    pub confidence: f32,
+    pub provenance: String,
+    pub created_at: String,
+    pub session_id: Option<String>,
+    pub source_turn: Option<i32>,
+    pub importance_score: f32,
+    pub importance_source: String,
+    pub archived_at: String,
+}
+
+impl From<ArchivedMemory> for ArchivedMemoryDto {
+    fn from(m: ArchivedMemory) -> Self {
+        Self {
+            id: m.id.to_string(),
+            content: m.content,
+            memory_type: m.memory_type,
+            confidence: m.confidence,
+            provenance: m.provenance,
+            created_at: m.created_at.to_rfc3339(),
+            session_id: m.session_id,
+            source_turn: m.source_turn,
+            importance_score: m.importance_score,
+            importance_source: m.importance_source,
+            archived_at: m.archived_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct ArchivedMemoryListResponse {
+    pub memories: Vec<ArchivedMemoryDto>,
     pub total: i64,
 }
 
@@ -329,4 +368,47 @@ pub async fn get_stats(
         memory_count,
         tokens_saved_estimate: memory_count * 200,
     }))
+}
+
+pub async fn list_archived_memories(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(pagination): Query<Pagination>,
+) -> Result<Json<ArchivedMemoryListResponse>, (StatusCode, String)> {
+    let limit = pagination.limit.unwrap_or(50).min(200);
+    let offset = pagination.offset.unwrap_or(0);
+
+    let memories = store::list_archived_memories(&state, &agent_id, limit, offset)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::bigint FROM memories WHERE agent_id = $1 AND archived_at IS NOT NULL",
+    )
+    .bind(&agent_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or((0,));
+
+    Ok(Json(ArchivedMemoryListResponse {
+        total: total.0,
+        memories: memories.into_iter().map(ArchivedMemoryDto::from).collect(),
+    }))
+}
+
+pub async fn restore_memory(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let restored = store::restore_memory(&state, uuid)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if restored {
+        Ok(Json(serde_json::json!({ "restored": true })))
+    } else {
+        Err((StatusCode::NOT_FOUND, format!("memory {} not found or not archived", id)))
+    }
 }

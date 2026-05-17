@@ -230,6 +230,44 @@ pub async fn list_memories_for_agent(
     Ok(rows)
 }
 
+/// List tombstoned (archived) memories for an agent, newest-archived first.
+pub async fn list_archived_memories(
+    state: &AppState,
+    agent_id: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<crate::models::ArchivedMemory>> {
+    let rows = sqlx::query_as(
+        r#"
+        SELECT id, agent_id, session_id, content, memory_type, confidence, provenance,
+               created_at, source_turn, importance_score, importance_source, archived_at
+        FROM memories
+        WHERE agent_id = $1
+          AND archived_at IS NOT NULL
+        ORDER BY archived_at DESC
+        LIMIT $2 OFFSET $3
+        "#,
+    )
+    .bind(agent_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(rows)
+}
+
+/// Restore a tombstoned memory by clearing `archived_at`.
+/// Returns `true` if the memory existed and was archived, `false` otherwise.
+pub async fn restore_memory(state: &AppState, id: Uuid) -> Result<bool> {
+    let r = sqlx::query(
+        "UPDATE memories SET archived_at = NULL WHERE id = $1 AND archived_at IS NOT NULL",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await?;
+    Ok(r.rows_affected() > 0)
+}
+
 pub async fn delete_memory(state: &AppState, id: Uuid) -> Result<bool> {
     let r = sqlx::query("DELETE FROM memories WHERE id = $1")
         .bind(id)
