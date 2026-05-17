@@ -40,6 +40,12 @@ pub struct Metrics {
 
     /// Requests rejected by the per-agent rate limiter.
     pub rate_limited_total: Counter,
+
+    /// Distribution of importance scores at extraction time (0.0–1.0).
+    pub extraction_importance: Histogram,
+
+    /// Facts with importance_score >= 0.9 stored.
+    pub high_importance_total: Counter,
 }
 
 impl Metrics {
@@ -127,6 +133,21 @@ impl Metrics {
             "Requests rejected by the per-agent rate limiter",
         ))?);
 
+        let importance_buckets = vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+
+        let extraction_importance = reg!(Histogram::with_opts(
+            HistogramOpts::new(
+                "memoryos_extraction_importance",
+                "Distribution of importance scores at extraction",
+            )
+            .buckets(importance_buckets),
+        )?);
+
+        let high_importance_total = reg!(Counter::with_opts(Opts::new(
+            "memoryos_high_importance_facts_total",
+            "Facts with importance_score >= 0.9 stored",
+        ))?);
+
         Ok(Self {
             registry: Arc::new(reg),
             requests_total,
@@ -139,6 +160,8 @@ impl Metrics {
             archival_total,
             archival_compacted,
             rate_limited_total,
+            extraction_importance,
+            high_importance_total,
         })
     }
 

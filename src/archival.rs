@@ -147,6 +147,8 @@ async fn archive_agent(
                     None,
                     "L3",
                     "inferred",
+                    0.5_f32,
+                    "extractor",
                 )
                 .await
                 {

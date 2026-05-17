@@ -92,6 +92,8 @@ pub struct Memory {
     pub provenance: String,
     pub created_at: DateTime<Utc>,
     pub source_turn: Option<i32>,
+    pub importance_score: f32,
+    pub importance_source: String,
 }
 
 /// Row returned by vector-similarity search — includes the computed distance.
@@ -106,6 +108,8 @@ pub struct MemorySearchRow {
     pub provenance: String,
     pub created_at: DateTime<Utc>,
     pub source_turn: Option<i32>,
+    pub importance_score: f32,
+    pub importance_source: String,
     pub distance: Option<f64>,
 }
 
@@ -146,6 +150,8 @@ pub struct ExtractedFact {
     /// Line number in the numbered transcript where this fact is cited.
     pub cited_line: Option<u32>,
     pub confidence: f64,
+    pub importance_score: Option<f64>,   // 0.0–1.0; None → default 0.5
+    pub importance_source: Option<String>, // 'extractor' | 'user_stated' | 'agent_marked'
 }
 
 #[derive(Debug, Deserialize, Serialize)]

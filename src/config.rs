@@ -28,6 +28,11 @@ pub struct Config {
     /// `adjusted_dist = cosine_dist * (1 + decay_rate * days_since_last_access)`
     /// Set to 0.0 (default) to disable decay and use pure cosine similarity.
     pub memory_decay_rate: f64,
+    /// Importance weight in retrieval formula. 0.0 = disabled (default).
+    /// adjusted_dist *= (1 + importance_boost_factor * (1 - importance_score))
+    pub importance_boost_factor: f64,
+    /// Per-retrieval boost added to importance_score (spacing-effect refresh). 0.0 = disabled.
+    pub importance_refresh_boost: f32,
 
     // ── Management API security ───────────────────────────────────────────────
     /// When set, all /api/v1/* routes require this key via
@@ -93,6 +98,14 @@ impl Config {
                 .unwrap_or_else(|_| "0.0".to_string())
                 .parse()
                 .context("MEMORY_DECAY_RATE must be a float")?,
+            importance_boost_factor: std::env::var("IMPORTANCE_BOOST_FACTOR")
+                .unwrap_or_else(|_| "0.0".to_string())
+                .parse()
+                .context("IMPORTANCE_BOOST_FACTOR must be a float")?,
+            importance_refresh_boost: std::env::var("IMPORTANCE_REFRESH_BOOST")
+                .unwrap_or_else(|_| "0.05".to_string())
+                .parse()
+                .context("IMPORTANCE_REFRESH_BOOST must be a float")?,
 
             management_api_key: std::env::var("MANAGEMENT_API_KEY").ok(),
 

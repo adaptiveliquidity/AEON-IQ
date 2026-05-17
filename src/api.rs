@@ -37,6 +37,8 @@ pub struct MemoryDto {
     pub created_at: String,
     pub session_id: Option<String>,
     pub source_turn: Option<i32>,
+    pub importance_score: f32,
+    pub importance_source: String,
 }
 
 impl From<Memory> for MemoryDto {
@@ -50,6 +52,8 @@ impl From<Memory> for MemoryDto {
             created_at: m.created_at.to_rfc3339(),
             session_id: m.session_id,
             source_turn: m.source_turn,
+            importance_score: m.importance_score,
+            importance_source: m.importance_source,
         }
     }
 }
@@ -110,6 +114,7 @@ pub struct SearchResult {
     pub created_at: String,
     pub source_turn: Option<i32>,
     pub session_id: Option<String>,
+    pub importance_score: f32,
 }
 
 #[derive(Serialize)]
@@ -221,6 +226,8 @@ pub async fn create_memory(
         embedding,
         None,
         "user_stated",
+        1.0_f32,
+        "user_stated",
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -295,6 +302,7 @@ pub async fn search_memories_semantic(
             created_at: r.created_at.to_rfc3339(),
             source_turn: r.source_turn,
             session_id: r.session_id,
+            importance_score: r.importance_score,
         })
         .collect();
 

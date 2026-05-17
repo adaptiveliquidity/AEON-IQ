@@ -67,9 +67,31 @@ Archival job (`src/archival.rs`) runs on `ARCHIVAL_INTERVAL_HOURS` schedule: com
 
 `search_memories_filtered` uses a two-CTE SQL pattern:
 - `base` — cosine distance + `days_stale` (days since `last_accessed_at`, or `created_at` if never accessed)
-- `ranked` — `adjusted_dist = cosine_dist * (1 + MEMORY_DECAY_RATE * days_stale)`
+- `ranked` — three-factor adjusted distance:
 
-When `MEMORY_DECAY_RATE=0.0` (default) the formula collapses to pure cosine similarity.
+```
+adjusted_dist = cosine_dist
+    × (1 + MEMORY_DECAY_RATE × days_stale)
+    × (1 + IMPORTANCE_BOOST_FACTOR × (1 − importance_score))
+```
+
+When `MEMORY_DECAY_RATE=0.0` and `IMPORTANCE_BOOST_FACTOR=0.0` (defaults) the formula collapses to pure cosine similarity.
+
+### Importance scoring
+
+Each memory has an `importance_score` (0.0–1.0) and `importance_source` assigned at extraction time. The score comes from one of three signals, in priority order:
+
+1. **`user_stated`** — `x-memory-importance` request header (e.g. `x-memory-importance: 0.95`) — caller override, highest priority
+2. **`agent_marked`** — `<important>…</important>` XML tags in assistant responses — score floored at 0.9
+3. **`extractor`** — LLM-assigned score using a four-tier rubric:
+   - 1.0 = critical/permanent (identity, goals, compliance rules)
+   - 0.8–0.99 = high business value (key decisions, product names)
+   - 0.5–0.79 = standard episodic detail or preference
+   - 0.0–0.49 = trivial / conversational filler
+
+**Archival protection**: memories with `importance_score >= 0.9` are excluded from the L2→L3 compaction job — they are never automatically archived regardless of age or access count.
+
+**Refresh-on-read**: every retrieval increments `importance_score` by `IMPORTANCE_REFRESH_BOOST` (default 0.05, capped at 1.0), implementing a spacing-effect memory reinforcement signal.
 
 ### Provider abstraction
 
@@ -109,6 +131,8 @@ Migrations run automatically at startup via `sqlx::migrate!("./migrations")`. Th
 | `EXTRACTOR_BASE_URL` | `https://api.openai.com` | Override for extraction LLM |
 | `RETRIEVAL_THRESHOLD` | `0.80` | Cosine distance upper bound |
 | `MEMORY_DECAY_RATE` | `0.0` | Per-day staleness penalty; 0 = disabled |
+| `IMPORTANCE_BOOST_FACTOR` | `0.0` | Importance weight in retrieval; 0 = disabled |
+| `IMPORTANCE_REFRESH_BOOST` | `0.05` | Per-retrieval importance bump; 0 = disabled |
 | `RATE_LIMIT_RPM` | `0` | Per-agent request cap; 0 = disabled |
 | `MANAGEMENT_API_KEY` | unset | Unauthenticated if unset |
 | `EMBEDDING_DIMENSION` | `1536` | Must match `vector(N)` in schema |

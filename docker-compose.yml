@@ -39,6 +39,8 @@ services:
       RATE_LIMIT_RPM:             ${RATE_LIMIT_RPM:-0}
       RATE_LIMIT_BURST:           ${RATE_LIMIT_BURST:-20}
       MEMORY_DECAY_RATE:          ${MEMORY_DECAY_RATE:-0.0}
+      IMPORTANCE_BOOST_FACTOR:    ${IMPORTANCE_BOOST_FACTOR:-0.0}
+      IMPORTANCE_REFRESH_BOOST:   ${IMPORTANCE_REFRESH_BOOST:-0.05}
       EMBEDDING_BASE_URL:         ${EMBEDDING_BASE_URL:-https://api.openai.com}
       RUST_LOG:                   memoryos_kernel=info,tower_http=info
       PORT:                       8080

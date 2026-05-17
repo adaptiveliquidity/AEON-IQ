@@ -23,10 +23,13 @@ interface MemoryDto {
   created_at: string;
   session_id: string | null;
   source_turn: number | null;
+  importance_score: number;
+  importance_source: string;
 }
 
 interface SearchResult extends MemoryDto {
   similarity: number;
+  importance_score: number;
 }
 
 interface RelationDto {
@@ -413,6 +416,7 @@ export default function MemoryExplorerClient({
                         <span className="text-xs text-zinc-500">
                           conf: {(r.confidence * 100).toFixed(0)}%
                         </span>
+                        <ImportanceBadge score={r.importance_score} source={r.importance_source} />
                         {r.source_turn !== null && (
                           <span className="text-xs text-zinc-500">turn {r.source_turn}</span>
                         )}
@@ -492,6 +496,22 @@ export default function MemoryExplorerClient({
   );
 }
 
+// ── ImportanceBadge sub-component ────────────────────────────────────────────
+
+function ImportanceBadge({ score, source }: { score: number; source: string }) {
+  const pct = Math.round(score * 100);
+  const color =
+    score >= 0.9  ? "text-rose-400"   :
+    score >= 0.7  ? "text-orange-400" :
+    score >= 0.5  ? "text-zinc-400"   :
+                    "text-zinc-600";
+  return (
+    <span className={`text-xs ${color}`} title={`importance: ${pct}% (${source})`}>
+      ★ {pct}%
+    </span>
+  );
+}
+
 // ── MemoryTable sub-component ─────────────────────────────────────────────────
 
 function MemoryTable({
@@ -560,6 +580,7 @@ function MemoryTable({
                   <span className={`text-xs ${PROV_COLORS[m.provenance] ?? "text-zinc-500"}`}>
                     {m.provenance}
                   </span>
+                  <ImportanceBadge score={m.importance_score} source={m.importance_source} />
                   <span className="text-xs text-zinc-500">
                     conf: {(m.confidence * 100).toFixed(0)}%
                   </span>

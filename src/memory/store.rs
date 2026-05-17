@@ -40,6 +40,8 @@ pub async fn store_memory(
     embedding: Vec<f32>,
     source_turn: Option<i32>,
     provenance: &str,
+    importance_score: f32,
+    importance_source: &str,
 ) -> Result<Uuid> {
     store_memory_with_tier(
         state,
@@ -52,6 +54,8 @@ pub async fn store_memory(
         source_turn,
         "L2",
         provenance,
+        importance_score,
+        importance_source,
     )
     .await
 }
@@ -67,13 +71,15 @@ pub async fn store_memory_with_tier(
     source_turn: Option<i32>,
     tier: &str,
     provenance: &str,
+    importance_score: f32,
+    importance_source: &str,
 ) -> Result<Uuid> {
     let vec = Vector::from(embedding);
     let row: (Uuid,) = sqlx::query_as(
         r#"
         INSERT INTO memories
-            (agent_id, session_id, content, memory_type, confidence, embedding, source_turn, tier, provenance)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            (agent_id, session_id, content, memory_type, confidence, embedding, source_turn, tier, provenance, importance_score, importance_source)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING id
         "#,
     )
@@ -86,6 +92,8 @@ pub async fn store_memory_with_tier(
     .bind(source_turn)
     .bind(tier)
     .bind(provenance)
+    .bind(importance_score)
+    .bind(importance_source)
     .fetch_one(&state.db)
     .await?;
     Ok(row.0)
@@ -106,9 +114,12 @@ pub async fn search_memories(
 /// The `threshold` is an inclusive upper bound on cosine distance (lower = more similar).
 /// Only live (non-tombstoned) memories are returned.
 ///
-/// Decay scoring: `adjusted_dist = cosine_dist * (1 + decay_rate * days_stale)`
-/// where `days_stale` is days since last access (or creation if never accessed).
-/// When `decay_rate = 0.0` the formula collapses to pure cosine similarity.
+/// Three-factor scoring:
+///   `adjusted_dist = cosine_dist
+///       * (1 + decay_rate * days_stale)
+///       * (1 + importance_boost * (1 - importance_score))`
+/// When `decay_rate = 0.0` and `importance_boost = 0.0` (defaults) the formula
+/// collapses to pure cosine similarity.
 pub async fn search_memories_filtered(
     state: &AppState,
     agent_id: &str,
@@ -120,15 +131,15 @@ pub async fn search_memories_filtered(
 ) -> Result<Vec<MemorySearchRow>> {
     let vec = Vector::from(embedding.to_vec());
     let decay_rate = state.config.memory_decay_rate;
+    let importance_boost = state.config.importance_boost_factor;
 
     // Two-CTE pattern:
-    //   base  — computes cosine distance and days_stale without binding the
-    //           vector twice
-    //   ranked — applies decay penalty; outer query filters and orders
+    //   base   — computes cosine distance, days_stale, and surfaces importance columns
+    //   ranked — applies decay + importance penalty; outer query filters and orders
     let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
         r#"WITH base AS (
     SELECT id, agent_id, session_id, content, memory_type, confidence, provenance,
-           created_at, source_turn,
+           created_at, source_turn, importance_score, importance_source,
            (embedding <=> "#,
     );
     qb.push_bind(vec);
@@ -150,13 +161,17 @@ pub async fn search_memories_filtered(
         qb.push_bind(sid);
     }
 
-    qb.push("),\nranked AS (\n    SELECT *, cosine_dist * (1.0 + ");
+    qb.push("),\nranked AS (\n    SELECT *,\n           cosine_dist\n           * (1.0 + ");
     qb.push_bind(decay_rate);
+    qb.push(" * days_stale)\n           * (1.0 + ");
+    qb.push_bind(importance_boost);
     qb.push(
-        r#" * days_stale) AS distance FROM base
+        r#" * (1.0 - importance_score::double precision))
+           AS distance
+    FROM base
 )
 SELECT id, agent_id, session_id, content, memory_type, confidence, provenance,
-       created_at, source_turn, distance
+       created_at, source_turn, importance_score, importance_source, distance
 FROM ranked WHERE distance < "#,
     );
     qb.push_bind(threshold);
@@ -170,14 +185,21 @@ FROM ranked WHERE distance < "#,
     Ok(rows)
 }
 
-/// Bump the access counter and record the access timestamp for a list of IDs.
+/// Bump the access counter, record the access timestamp, and apply a small
+/// importance refresh boost for a list of IDs.
 /// Called via `tokio::spawn` from the hot path — failures are silent.
 pub async fn bump_access_counts(state: AppState, ids: Vec<Uuid>) {
+    let refresh_boost = state.config.importance_refresh_boost;
     for id in ids {
         let _ = sqlx::query(
-            "UPDATE memories SET access_count = access_count + 1, last_accessed_at = NOW() WHERE id = $1",
+            "UPDATE memories \
+             SET access_count = access_count + 1, \
+                 last_accessed_at = NOW(), \
+                 importance_score = LEAST(1.0, importance_score + $2) \
+             WHERE id = $1",
         )
         .bind(id)
+        .bind(refresh_boost)
         .execute(&state.db)
         .await;
     }
@@ -192,7 +214,7 @@ pub async fn list_memories_for_agent(
     let rows = sqlx::query_as::<_, Memory>(
         r#"
         SELECT id, agent_id, session_id, content, memory_type, confidence, provenance,
-               created_at, source_turn
+               created_at, source_turn, importance_score, importance_source
         FROM memories
         WHERE agent_id = $1
           AND archived_at IS NULL
@@ -342,6 +364,7 @@ pub async fn get_agent_relations(
 // ── Archival helpers ──────────────────────────────────────────────────────────
 
 /// Returns agent IDs that have at least one archivable L2 memory.
+/// High-importance memories (score >= 0.9) are protected from archival.
 pub async fn agents_with_archivable_memories(
     state: &AppState,
     min_age_days: i64,
@@ -353,6 +376,7 @@ pub async fn agents_with_archivable_memories(
         WHERE tier = 'L2'
           AND access_count = 0
           AND archived_at IS NULL
+          AND importance_score < 0.9
           AND created_at < NOW() - INTERVAL '1 day' * $1
         "#,
     )
@@ -363,6 +387,7 @@ pub async fn agents_with_archivable_memories(
 }
 
 /// Fetch up to `limit` archivable L2 memories for one agent.
+/// High-importance memories (score >= 0.9) are protected from archival.
 pub async fn fetch_archivable_memories(
     state: &AppState,
     agent_id: &str,
@@ -377,6 +402,7 @@ pub async fn fetch_archivable_memories(
           AND tier = 'L2'
           AND access_count = 0
           AND archived_at IS NULL
+          AND importance_score < 0.9
           AND created_at < NOW() - INTERVAL '1 day' * $2
         ORDER BY created_at ASC
         LIMIT $3
@@ -448,6 +474,10 @@ mod tests {
     }
 
     fn build_state(pool: sqlx::PgPool, decay_rate: f64) -> crate::AppState {
+        build_state_with_importance(pool, decay_rate, 0.0)
+    }
+
+    fn build_state_with_importance(pool: sqlx::PgPool, decay_rate: f64, importance_boost_factor: f64) -> crate::AppState {
         crate::AppState {
             config: Arc::new(Config {
                 database_url: String::new(),
@@ -461,6 +491,8 @@ mod tests {
                 extractor_base_url: "http://localhost".into(),
                 retrieval_threshold: 0.80,
                 memory_decay_rate: decay_rate,
+                importance_boost_factor,
+                importance_refresh_boost: 0.05,
                 management_api_key: None,
                 archival_interval_hours: 0,
                 archival_min_age_days: 7,
@@ -488,6 +520,7 @@ mod tests {
         let id = store_memory(
             &state, AGENT, None, "user stated a fact",
             "episodic", 0.85, unit_vec(0), None, "user_stated",
+            0.5_f32, "extractor",
         )
         .await
         .unwrap();
@@ -509,6 +542,7 @@ mod tests {
         let id = store_memory(
             &state, AGENT, None, "soon to be tombstoned",
             "episodic", 0.9, unit_vec(0), None, "user_stated",
+            0.5_f32, "extractor",
         )
         .await
         .unwrap();
@@ -544,6 +578,7 @@ mod tests {
         store_memory(
             &state, AGENT, Some("s1"), "Alex is building NovaPay",
             "episodic", 0.95, unit_vec(0), Some(3), "user_stated",
+            0.5_f32, "extractor",
         )
         .await
         .unwrap();
@@ -552,6 +587,7 @@ mod tests {
         store_memory(
             &state, AGENT, Some("s1"), "NovaPay processes cross-border payments",
             "semantic", 0.95, unit_vec(1), Some(5), "user_stated",
+            0.5_f32, "extractor",
         )
         .await
         .unwrap();
@@ -565,6 +601,7 @@ mod tests {
                 unit_vec(((turn as usize) % 1500) + 20),
                 Some(turn),
                 "assistant_derived",
+                0.5_f32, "extractor",
             )
             .await
             .unwrap();
@@ -610,12 +647,14 @@ mod tests {
             store_memory(
                 &state, AGENT, None, "fresh fact",
                 "episodic", 0.9, fresh_emb, None, "user_stated",
+                0.5_f32, "extractor",
             )
             .await
             .unwrap();
             store_memory(
                 &state, AGENT, None, "stale fact",
                 "episodic", 0.9, stale_emb, None, "user_stated",
+                0.5_f32, "extractor",
             )
             .await
             .unwrap()
@@ -651,5 +690,54 @@ mod tests {
             results[0].content, "fresh fact",
             "with decay: fresh should rank first despite higher base cosine distance"
         );
+    }
+
+    // ── Importance-weighted retrieval ─────────────────────────────────────────
+    //
+    // Same embedding, different importance scores:
+    //   high-importance (score=0.9) vs low-importance (score=0.1)
+    //   With boost_factor=2.0:
+    //     high: dist_adj = D * (1 + 2*0.1) = D*1.2  ← ranks first
+    //     low:  dist_adj = D * (1 + 2*0.9) = D*2.8  ← ranks second
+    // Both have the same base cosine distance so the importance factor decides.
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn importance_weighted_retrieval(pool: sqlx::PgPool) {
+        const AGENT: &str = "test-importance";
+        let emb_hi = two_hot(0, 0.8, 1, 0.6);
+        let emb_lo = two_hot(0, 0.8, 1, 0.6); // same embedding — only importance differs
+        let query = unit_vec(0);
+
+        {
+            let state = build_state(pool.clone(), 0.0);
+            store_memory(
+                &state, AGENT, None, "high importance fact", "episodic", 0.9,
+                emb_hi, None, "user_stated", 0.9_f32, "user_stated",
+            ).await.unwrap();
+            store_memory(
+                &state, AGENT, None, "low importance fact", "episodic", 0.9,
+                emb_lo, None, "user_stated", 0.1_f32, "extractor",
+            ).await.unwrap();
+        }
+
+        // Without importance boost: both have same adjusted dist — both present
+        {
+            let state = build_state(pool.clone(), 0.0);
+            let results = search_memories_filtered(&state, AGENT, &query, 2, 1.0, None, None)
+                .await.unwrap();
+            assert_eq!(results.len(), 2, "both facts should be returned without boost");
+        }
+
+        // With importance boost=2.0: high-importance should rank first
+        {
+            let state = build_state_with_importance(pool.clone(), 0.0, 2.0);
+            let results = search_memories_filtered(&state, AGENT, &query, 2, 5.0, None, None)
+                .await.unwrap();
+            assert_eq!(results.len(), 2, "both facts should be returned with boost");
+            assert_eq!(
+                results[0].content, "high importance fact",
+                "high-importance should rank first with boost enabled"
+            );
+        }
     }
 }

@@ -44,6 +44,12 @@ pub async fn handle_chat_completions(
         .map(|s| s.to_string())
         .unwrap_or_else(|| format!("sess-{}", uuid::Uuid::new_v4()));
 
+    let importance_override: Option<f32> = headers
+        .get("x-memory-importance")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<f32>().ok())
+        .map(|v| v.clamp(0.0, 1.0));
+
     // ── 2. Rate limiting ──────────────────────────────────────────────────────
     if !state.rate_limiter.check_and_consume(&agent_id) {
         state.metrics.rate_limited_total.inc();
@@ -159,6 +165,7 @@ pub async fn handle_chat_completions(
             proxy_anthropic(
                 state, agent_id, session_id, original_messages,
                 turn_number, upstream_resp, up_status, is_streaming, model,
+                importance_override,
             )
             .await
         }
@@ -167,12 +174,14 @@ pub async fn handle_chat_completions(
                 proxy_streaming(
                     state, agent_id, session_id, original_messages,
                     turn_number, upstream_resp, up_status, up_headers,
+                    importance_override,
                 )
                 .await
             } else {
                 proxy_buffered(
                     state, agent_id, session_id, original_messages,
                     turn_number, upstream_resp, up_status, up_headers,
+                    importance_override,
                 )
                 .await
             }
@@ -224,6 +233,7 @@ async fn proxy_streaming(
     upstream_resp: reqwest::Response,
     up_status: reqwest::StatusCode,
     up_headers: reqwest::header::HeaderMap,
+    importance_override: Option<f32>,
 ) -> Result<Response<Body>, (StatusCode, String)> {
     let mut byte_stream = upstream_resp.bytes_stream();
     let (forward_tx, forward_rx) = mpsc::channel::<Bytes>(128);
@@ -259,6 +269,7 @@ async fn proxy_streaming(
                     original_messages,
                     content,
                     turn_number,
+                    importance_override,
                 )
                 .await;
             }
@@ -287,6 +298,7 @@ async fn proxy_buffered(
     upstream_resp: reqwest::Response,
     up_status: reqwest::StatusCode,
     up_headers: reqwest::header::HeaderMap,
+    importance_override: Option<f32>,
 ) -> Result<Response<Body>, (StatusCode, String)> {
     let bytes = upstream_resp
         .bytes()
@@ -304,6 +316,7 @@ async fn proxy_buffered(
                 original_messages,
                 content,
                 turn_number,
+                importance_override,
             )
             .await;
         }
@@ -341,6 +354,7 @@ async fn proxy_anthropic(
     up_status: reqwest::StatusCode,
     is_streaming: bool,
     model: String,
+    importance_override: Option<f32>,
 ) -> Result<Response<Body>, (StatusCode, String)> {
     // Forward non-2xx errors as-is (Anthropic error JSON is informative).
     if !up_status.is_success() {
@@ -372,7 +386,7 @@ async fn proxy_anthropic(
         let messages_c  = original_messages.clone();
         let content_c   = content.clone();
         tokio::spawn(async move {
-            extract_and_store(state_c, agent_id_c, session_id_c, messages_c, content_c, turn_number).await;
+            extract_and_store(state_c, agent_id_c, session_id_c, messages_c, content_c, turn_number, importance_override).await;
         });
     }
 
