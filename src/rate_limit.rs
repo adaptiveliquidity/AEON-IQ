@@ -58,3 +58,43 @@ impl RateLimiter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_limiter_always_allows() {
+        let rl = RateLimiter::new(0, 20);
+        for _ in 0..200 {
+            assert!(rl.check_and_consume("agent-x"));
+        }
+    }
+
+    #[test]
+    fn burst_capacity_is_enforced() {
+        let rl = RateLimiter::new(60, 3);
+        assert!(rl.check_and_consume("a"));
+        assert!(rl.check_and_consume("a"));
+        assert!(rl.check_and_consume("a"));
+        assert!(!rl.check_and_consume("a"), "4th request should be rejected");
+    }
+
+    #[test]
+    fn agents_have_independent_buckets() {
+        let rl = RateLimiter::new(60, 1);
+        assert!(rl.check_and_consume("alice"));
+        assert!(!rl.check_and_consume("alice"), "alice exhausted");
+        assert!(rl.check_and_consume("bob"),   "bob unaffected by alice's bucket");
+    }
+
+    #[test]
+    fn tokens_refill_after_elapsed_time() {
+        // 600 RPM = 10 req/sec = 1 token per 100 ms; burst = 1
+        let rl = RateLimiter::new(600, 1);
+        assert!(rl.check_and_consume("r"));
+        assert!(!rl.check_and_consume("r"));
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(rl.check_and_consume("r"), "should have refilled after 150 ms");
+    }
+}

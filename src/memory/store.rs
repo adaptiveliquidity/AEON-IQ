@@ -407,3 +407,249 @@ pub async fn tombstone_memories(state: &AppState, ids: &[Uuid]) -> Result<u64> {
     let r = qb.build().execute(&state.db).await?;
     Ok(r.rows_affected())
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Integration tests use `#[sqlx::test]` which creates an isolated Postgres
+// database per test, runs all migrations, then drops the database when done.
+//
+// Requirements:
+//   - DATABASE_URL must point to a pgvector-enabled Postgres instance where
+//     the user has CREATE DATABASE privilege (or set PGCREATEDB=true).
+//   - Locally: `docker compose up postgres` then run `cargo test`.
+//   - In CI: use the `pgvector/pgvector:pg16` image.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        config::Config, metrics::Metrics, providers::Provider, rate_limit::RateLimiter,
+    };
+    use std::sync::Arc;
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Unit vector with a 1.0 at `hot` and 0.0 everywhere else.
+    fn unit_vec(hot: usize) -> Vec<f32> {
+        let mut v = vec![0.0f32; 1536];
+        v[hot] = 1.0;
+        v
+    }
+
+    /// Two-component unit vector (for decay tests where cosine dist != 0).
+    /// Caller is responsible for ensuring a² + b² ≈ 1.
+    fn two_hot(dim_a: usize, a: f32, dim_b: usize, b: f32) -> Vec<f32> {
+        let mut v = vec![0.0f32; 1536];
+        v[dim_a] = a;
+        v[dim_b] = b;
+        v
+    }
+
+    fn build_state(pool: sqlx::PgPool, decay_rate: f64) -> crate::AppState {
+        crate::AppState {
+            config: Arc::new(Config {
+                database_url: String::new(),
+                upstream_base_url: "http://localhost".into(),
+                port: 8080,
+                openai_api_key: None,
+                embedding_model: "test".into(),
+                embedding_dimension: 1536,
+                embedding_base_url: "http://localhost".into(),
+                extractor_model: "test".into(),
+                extractor_base_url: "http://localhost".into(),
+                retrieval_threshold: 0.80,
+                memory_decay_rate: decay_rate,
+                management_api_key: None,
+                archival_interval_hours: 0,
+                archival_min_age_days: 7,
+                archival_min_memories: 10,
+                upstream_provider: "openai".into(),
+                rate_limit_rpm: 0,
+                rate_limit_burst: 20,
+            }),
+            db: pool,
+            http_client: reqwest::Client::new(),
+            metrics: Arc::new(Metrics::new().unwrap()),
+            provider: Provider::OpenAI,
+            rate_limiter: Arc::new(RateLimiter::new(0, 0)),
+        }
+    }
+
+    // ── Provenance ────────────────────────────────────────────────────────────
+
+    /// Provenance label and confidence value survive a round-trip through the DB.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn provenance_round_trips(pool: sqlx::PgPool) {
+        let state = build_state(pool, 0.0);
+        const AGENT: &str = "prov-agent";
+
+        let id = store_memory(
+            &state, AGENT, None, "user stated a fact",
+            "episodic", 0.85, unit_vec(0), None, "user_stated",
+        )
+        .await
+        .unwrap();
+
+        let rows = list_memories_for_agent(&state, AGENT, 10, 0).await.unwrap();
+        let m = rows.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(m.provenance, "user_stated");
+        assert!((m.confidence - 0.85).abs() < 1e-5, "confidence mismatch: {}", m.confidence);
+    }
+
+    // ── Tombstone ─────────────────────────────────────────────────────────────
+
+    /// Tombstoned memories are excluded from both vector search and list queries.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn tombstoned_memories_excluded(pool: sqlx::PgPool) {
+        let state = build_state(pool, 0.0);
+        const AGENT: &str = "tomb-agent";
+
+        let id = store_memory(
+            &state, AGENT, None, "soon to be tombstoned",
+            "episodic", 0.9, unit_vec(0), None, "user_stated",
+        )
+        .await
+        .unwrap();
+
+        // Reachable before tombstone
+        let before = search_memories_filtered(&state, AGENT, &unit_vec(0), 5, 0.01, None, None)
+            .await
+            .unwrap();
+        assert_eq!(before.len(), 1, "should find the memory before tombstone");
+
+        tombstone_memories(&state, &[id]).await.unwrap();
+
+        // Excluded after tombstone
+        let after = search_memories_filtered(&state, AGENT, &unit_vec(0), 5, 0.01, None, None)
+            .await
+            .unwrap();
+        assert!(after.is_empty(), "tombstoned memory must be excluded from search");
+
+        let listed = list_memories_for_agent(&state, AGENT, 10, 0).await.unwrap();
+        assert!(listed.is_empty(), "tombstoned memory must be excluded from list");
+    }
+
+    // ── 20-turn retention ─────────────────────────────────────────────────────
+
+    /// A fact stored at turn 3 is still retrievable by vector similarity at turn
+    /// 20, even after 17 unrelated facts have been stored in between.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retention_across_20_turns(pool: sqlx::PgPool) {
+        let state = build_state(pool, 0.0);
+        const AGENT: &str = "retention-agent";
+
+        // Turn 3: key fact — embedding lives at dim 0
+        store_memory(
+            &state, AGENT, Some("s1"), "Alex is building NovaPay",
+            "episodic", 0.95, unit_vec(0), Some(3), "user_stated",
+        )
+        .await
+        .unwrap();
+
+        // Turn 5: second key fact — embedding at dim 1
+        store_memory(
+            &state, AGENT, Some("s1"), "NovaPay processes cross-border payments",
+            "semantic", 0.95, unit_vec(1), Some(5), "user_stated",
+        )
+        .await
+        .unwrap();
+
+        // Turns 1-2, 4, 6-20: noise in unrelated dimensions
+        for turn in (1i32..=20).filter(|&t| t != 3 && t != 5) {
+            store_memory(
+                &state, AGENT, Some("s1"),
+                &format!("Noise chatter at turn {}", turn),
+                "episodic", 0.80,
+                unit_vec(((turn as usize) % 1500) + 20),
+                Some(turn),
+                "assistant_derived",
+            )
+            .await
+            .unwrap();
+        }
+
+        // At turn 20: query using the NovaPay vector (dim 0, exact match)
+        let results =
+            search_memories_filtered(&state, AGENT, &unit_vec(0), 5, 0.10, None, None)
+                .await
+                .unwrap();
+
+        assert_eq!(results.len(), 1, "should find exactly the NovaPay fact");
+        assert!(
+            results[0].content.contains("NovaPay"),
+            "top result should be the turn-3 NovaPay fact, got: {:?}",
+            results[0].content
+        );
+        assert_eq!(results[0].source_turn, Some(3));
+    }
+
+    // ── Decay scoring ─────────────────────────────────────────────────────────
+    //
+    // Setup:
+    //   query  = [1.0, 0.0, ...]           (unit vector at dim 0)
+    //   fresh  = [0.8, 0.6,  0.0, ...]     cosine dist ≈ 0.20 from query
+    //   stale  = [0.9, 0.0,  0.4359, ...]  cosine dist ≈ 0.10 from query
+    //
+    // Without decay: stale ranks first (lower cosine dist 0.10 < 0.20).
+    // With decay_rate=0.5 and stale aged 30 days:
+    //   adjusted_dist(stale) = 0.10 * (1 + 0.5 * 30) = 1.60
+    //   adjusted_dist(fresh) = 0.20 * (1 + 0)        = 0.20  ← wins
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn decay_reorders_stale_memories(pool: sqlx::PgPool) {
+        const AGENT: &str = "decay-agent";
+        // sqrt(1 - 0.81) = sqrt(0.19) ≈ 0.4359
+        let fresh_emb = two_hot(0, 0.8, 1, 0.6);
+        let stale_emb = two_hot(0, 0.9, 2, 0.4359);
+        let query = unit_vec(0);
+
+        let stale_id = {
+            let state = build_state(pool.clone(), 0.0);
+            store_memory(
+                &state, AGENT, None, "fresh fact",
+                "episodic", 0.9, fresh_emb, None, "user_stated",
+            )
+            .await
+            .unwrap();
+            store_memory(
+                &state, AGENT, None, "stale fact",
+                "episodic", 0.9, stale_emb, None, "user_stated",
+            )
+            .await
+            .unwrap()
+        };
+
+        // Artificially age the stale memory by 30 days
+        sqlx::query(
+            "UPDATE memories SET last_accessed_at = NOW() - INTERVAL '30 days' WHERE id = $1",
+        )
+        .bind(stale_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Without decay: stale (cosine dist 0.10) ranks ahead of fresh (0.20)
+        let no_decay = build_state(pool.clone(), 0.0);
+        let results = search_memories_filtered(&no_decay, AGENT, &query, 2, 1.0, None, None)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results[0].content, "stale fact",
+            "without decay: lower cosine dist should rank first"
+        );
+
+        // With decay (rate 0.5): stale adjusted dist = 1.60, fresh = 0.20
+        let with_decay = build_state(pool, 0.5);
+        let results = search_memories_filtered(&with_decay, AGENT, &query, 2, 5.0, None, None)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results[0].content, "fresh fact",
+            "with decay: fresh should rank first despite higher base cosine distance"
+        );
+    }
+}

@@ -9,8 +9,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cargo check                        # fast type-check (no DB needed)
 cargo build                        # debug build
 cargo build --release              # production build
-cargo test                         # unit tests
+
+# Unit tests only (no database required)
+cargo test -- --skip memory::store::tests
+
+# All tests including DB integration tests (requires DATABASE_URL → pgvector Postgres)
+# Run `docker compose up postgres` first, then:
+cargo test
 ```
+
+The 4 integration tests in `src/memory/store.rs` (marked `#[sqlx::test]`) each create an isolated test database, run all migrations, execute the test, then drop the database. They need a Postgres instance with pgvector installed and a user with `CREATEDB` privilege — the `docker compose up postgres` service satisfies this. They will panic with "DATABASE_URL must be set" if no database is available, which is expected in environments without Postgres.
 
 ### Full stack (Docker)
 ```bash

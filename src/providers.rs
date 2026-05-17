@@ -223,3 +223,119 @@ fn parse_anthropic_json(data: &[u8]) -> String {
         })
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── OpenAI / Gemini ───────────────────────────────────────────────────────
+
+    #[test]
+    fn openai_sse_concatenates_delta_content() {
+        let sse = b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n\
+                    data: {\"choices\":[{\"delta\":{\"content\":\", world\"}}]}\n\n\
+                    data: [DONE]\n\n";
+        assert_eq!(parse_openai_sse(sse), "Hello, world");
+    }
+
+    #[test]
+    fn openai_sse_empty_on_done_only() {
+        assert_eq!(parse_openai_sse(b"data: [DONE]\n\n"), "");
+    }
+
+    #[test]
+    fn openai_sse_skips_chunks_without_content() {
+        // role-only chunk has no content key
+        let sse = b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n\
+                    data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n\
+                    data: [DONE]\n\n";
+        assert_eq!(parse_openai_sse(sse), "Hi");
+    }
+
+    #[test]
+    fn openai_json_extracts_message_content() {
+        let json = br#"{"choices":[{"message":{"role":"assistant","content":"Test response"}}]}"#;
+        assert_eq!(parse_openai_json(json), "Test response");
+    }
+
+    #[test]
+    fn openai_json_returns_empty_on_malformed() {
+        assert_eq!(parse_openai_json(b"not json"), "");
+        assert_eq!(parse_openai_json(b"{}"), "");
+    }
+
+    // ── Anthropic ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn anthropic_sse_concatenates_text_deltas() {
+        let sse = b"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\
+                    data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\" Claude\"}}\n";
+        assert_eq!(parse_anthropic_sse(sse), "Hello Claude");
+    }
+
+    #[test]
+    fn anthropic_sse_ignores_non_text_event_types() {
+        let sse = b"data: {\"type\":\"message_start\"}\n\
+                    data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}\n\
+                    data: {\"type\":\"message_delta\"}\n";
+        assert_eq!(parse_anthropic_sse(sse), "");
+    }
+
+    #[test]
+    fn anthropic_json_extracts_first_text_block() {
+        let json = br#"{"content":[{"type":"text","text":"Anthropic response"}]}"#;
+        assert_eq!(parse_anthropic_json(json), "Anthropic response");
+    }
+
+    #[test]
+    fn anthropic_json_skips_non_text_blocks() {
+        let json = br#"{"content":[{"type":"tool_use","id":"x"},{"type":"text","text":"After tool"}]}"#;
+        assert_eq!(parse_anthropic_json(json), "After tool");
+    }
+
+    // ── Anthropic request builder ─────────────────────────────────────────────
+
+    #[test]
+    fn build_anthropic_body_lifts_system_messages() {
+        use crate::models::{ChatRequest, Message};
+        let req = ChatRequest {
+            model: "claude-3".into(),
+            messages: vec![
+                Message { role: "system".into(), content: "You are helpful.".into(), name: None },
+                Message { role: "user".into(),   content: "Hello".into(),            name: None },
+            ],
+            stream: None,
+            temperature: None,
+            max_tokens: None,
+            extra: Default::default(),
+        };
+        let body = build_anthropic_body(&req);
+        assert_eq!(body["system"].as_str(), Some("You are helpful."));
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"].as_str(), Some("user"));
+    }
+
+    #[test]
+    fn build_anthropic_body_merges_consecutive_same_role() {
+        use crate::models::{ChatRequest, Message};
+        let req = ChatRequest {
+            model: "claude-3".into(),
+            messages: vec![
+                Message { role: "user".into(), content: "First".into(), name: None },
+                Message { role: "user".into(), content: "Second".into(), name: None },
+                Message { role: "assistant".into(), content: "Reply".into(), name: None },
+            ],
+            stream: None,
+            temperature: None,
+            max_tokens: None,
+            extra: Default::default(),
+        };
+        let body = build_anthropic_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        // Two consecutive user messages must be merged into one
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs[0]["content"].as_str().unwrap().contains("First"));
+        assert!(msgs[0]["content"].as_str().unwrap().contains("Second"));
+    }
+}

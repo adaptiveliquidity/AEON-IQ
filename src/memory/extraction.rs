@@ -243,3 +243,34 @@ fn adjusted_confidence(provenance: &str, raw: f64) -> f32 {
     raw.min(cap) as f32
 }
 
+#[cfg(test)]
+mod tests {
+    use super::adjusted_confidence;
+
+    #[test]
+    fn user_stated_passes_through_up_to_cap() {
+        assert!((adjusted_confidence("user_stated", 0.80) - 0.80).abs() < 1e-6);
+        assert!((adjusted_confidence("user_stated", 0.95) - 0.95).abs() < 1e-6);
+        // above cap → clamped to 0.95
+        assert!((adjusted_confidence("user_stated", 1.00) - 0.95).abs() < 1e-6);
+    }
+
+    #[test]
+    fn assistant_derived_capped_at_0_70() {
+        assert!((adjusted_confidence("assistant_derived", 0.90) - 0.70).abs() < 1e-6);
+        assert!((adjusted_confidence("assistant_derived", 0.50) - 0.50).abs() < 1e-6);
+    }
+
+    #[test]
+    fn inferred_capped_at_0_50() {
+        assert!((adjusted_confidence("inferred", 0.90) - 0.50).abs() < 1e-6);
+        assert!((adjusted_confidence("inferred", 0.30) - 0.30).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unknown_provenance_capped_at_0_60() {
+        assert!((adjusted_confidence("random_label", 0.90) - 0.60).abs() < 1e-6);
+        assert!((adjusted_confidence("random_label", 0.40) - 0.40).abs() < 1e-6);
+    }
+}
+
