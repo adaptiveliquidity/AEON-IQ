@@ -106,11 +106,52 @@ curl http://localhost:8080/v1/chat/completions \
 
 ## Headers
 
-| Header          | Required | Description                                      |
-|-----------------|----------|--------------------------------------------------|
-| `x-agent-id`    | **Yes**  | Unique identifier for the agent / user           |
-| `x-session-id`  | No       | Groups turns into one session (auto-generated)   |
-| `x-user-id`     | No       | Optional sub-user identifier                     |
+| Header                | Required | Description                                                   |
+|-----------------------|----------|---------------------------------------------------------------|
+| `x-agent-id`          | **Yes**  | Unique identifier for the agent / user                        |
+| `x-session-id`        | No       | Groups turns into one session (auto-generated)                |
+| `x-memory-importance` | No       | Override importance score 0.0–1.0 for this turn's memories   |
+
+---
+
+## Archival history and restore
+
+MemoryOS automatically compacts old L2 memories into concise L3 facts. Every
+compaction run is recorded as an **archival batch** so you can audit or undo it.
+
+### List batches for an agent
+
+```bash
+curl -H "X-Management-Key: $MANAGEMENT_API_KEY" \
+  http://localhost:8080/api/v1/agents/my-agent/archival/batches
+```
+
+```json
+{
+  "batches": [
+    {
+      "id": "018f1a2b-...",
+      "created_at": "2026-05-17T03:00:00Z",
+      "source_count": 24,
+      "l3_count": 4,
+      "status": "completed"
+    }
+  ],
+  "total": 1
+}
+```
+
+### Restore a batch
+
+```bash
+curl -X POST -H "X-Management-Key: $MANAGEMENT_API_KEY" \
+  http://localhost:8080/api/v1/archival/batches/018f1a2b-.../restore
+```
+
+This atomically:
+1. Un-tombstones the original L2 memories (makes them live again)
+2. Tombstones the L3 compressed facts that replaced them
+3. Sets `batch.status = "restored"` (idempotent — cannot be restored twice)
 
 ---
 
@@ -120,6 +161,8 @@ Open **http://localhost:3000** after starting.
 
 - **Overview** — active agents, stored memories, estimated token & cost savings
 - **Memory Explorer** — search + delete memories per agent, manually add memories
+  - **Archived** tab — browse tombstoned memories and restore individuals with one click
+  - **Batch History** sub-tab — view every L2→L3 compaction run; restore entire batches atomically
 
 ---
 

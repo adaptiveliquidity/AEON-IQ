@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     embeddings::embed_text,
     memory::store,
-    models::{ArchivedMemory, Memory, RelationRow},
+    models::{ArchivalBatch, ArchivedMemory, Memory, RelationRow},
     AppState,
 };
 
@@ -100,6 +100,37 @@ impl From<ArchivedMemory> for ArchivedMemoryDto {
 #[derive(Serialize)]
 pub struct ArchivedMemoryListResponse {
     pub memories: Vec<ArchivedMemoryDto>,
+    pub total: i64,
+}
+
+// ── Archival batch types ──────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ArchivalBatchDto {
+    pub id: String,
+    pub agent_id: String,
+    pub created_at: String,
+    pub source_count: i32,
+    pub l3_count: i32,
+    pub status: String,
+}
+
+impl From<ArchivalBatch> for ArchivalBatchDto {
+    fn from(b: ArchivalBatch) -> Self {
+        Self {
+            id: b.id.to_string(),
+            agent_id: b.agent_id,
+            created_at: b.created_at.to_rfc3339(),
+            source_count: b.source_count,
+            l3_count: b.l3_count,
+            status: b.status,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct ArchivalBatchListResponse {
+    pub batches: Vec<ArchivalBatchDto>,
     pub total: i64,
 }
 
@@ -410,5 +441,54 @@ pub async fn restore_memory(
         Ok(Json(serde_json::json!({ "restored": true })))
     } else {
         Err((StatusCode::NOT_FOUND, format!("memory {} not found or not archived", id)))
+    }
+}
+
+// ── Archival batch handlers ───────────────────────────────────────────────────
+
+pub async fn list_archival_batches(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(pagination): Query<Pagination>,
+) -> Result<Json<ArchivalBatchListResponse>, (StatusCode, String)> {
+    let limit = pagination.limit.unwrap_or(50).min(200);
+    let offset = pagination.offset.unwrap_or(0);
+
+    let batches = store::list_archival_batches(&state, &agent_id, limit, offset)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total = store::count_archival_batches(&state, &agent_id)
+        .await
+        .unwrap_or(batches.len() as i64);
+
+    Ok(Json(ArchivalBatchListResponse {
+        total,
+        batches: batches.into_iter().map(ArchivalBatchDto::from).collect(),
+    }))
+}
+
+pub async fn restore_archival_batch(
+    State(state): State<AppState>,
+    Path(batch_id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let uuid = Uuid::parse_str(&batch_id)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let result = store::restore_archival_batch(&state, uuid)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    match result {
+        Some(r) => Ok(Json(serde_json::json!({
+            "restored": true,
+            "batch_id": batch_id,
+            "l2_restored": r.l2_restored,
+            "l3_tombstoned": r.l3_tombstoned,
+        }))),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            format!("batch {} not found or already restored", batch_id),
+        )),
     }
 }

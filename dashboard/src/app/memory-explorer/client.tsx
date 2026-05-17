@@ -47,6 +47,15 @@ interface ArchivedMemoryDto extends MemoryDto {
   archived_at: string;
 }
 
+interface ArchivalBatchDto {
+  id: string;
+  agent_id: string;
+  created_at: string;
+  source_count: number;
+  l3_count: number;
+  status: "completed" | "restored";
+}
+
 interface MemoryList {
   memories: MemoryDto[];
   total: number;
@@ -54,6 +63,11 @@ interface MemoryList {
 
 interface ArchivedMemoryList {
   memories: ArchivedMemoryDto[];
+  total: number;
+}
+
+interface ArchivalBatchList {
+  batches: ArchivalBatchDto[];
   total: number;
 }
 
@@ -106,7 +120,9 @@ export default function MemoryExplorerClient({
   const [searching, setSearching]       = useState(false);
 
   // Archived tab
-  const [archivedData, setArchivedData] = useState<ArchivedMemoryList | null>(null);
+  const [archivedData, setArchivedData]   = useState<ArchivedMemoryList | null>(null);
+  const [batchData, setBatchData]         = useState<ArchivalBatchList | null>(null);
+  const [archivedView, setArchivedView]   = useState<"memories" | "history">("memories");
 
   const [loading, setLoading]           = useState(false);
   const [error, setError]               = useState<string | null>(null);
@@ -152,13 +168,45 @@ export default function MemoryExplorerClient({
     }
   }, [agentId]);
 
+  const loadBatches = useCallback(async () => {
+    if (!agentId.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `/api/agents/${encodeURIComponent(agentId)}/archival/batches`
+      );
+      if (!res.ok) throw new Error(await res.text());
+      setBatchData(await res.json());
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [agentId]);
+
+  const handleRestoreBatch = async (batchId: string) => {
+    if (!confirm("Restore this archival batch? The original L2 memories will become live again and the compressed L3 facts will be tombstoned.")) return;
+    try {
+      const res = await fetch(`/api/archival/batches/${batchId}/restore`, { method: "POST" });
+      if (!res.ok) throw new Error(await res.text());
+      loadBatches();
+      loadArchived();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   useEffect(() => {
     const t = setTimeout(() => {
       if (agentId && tab === "browse") loadBrowse();
-      if (agentId && tab === "archived") loadArchived();
+      if (agentId && tab === "archived") {
+        if (archivedView === "memories") loadArchived();
+        else loadBatches();
+      }
     }, 400);
     return () => clearTimeout(t);
-  }, [agentId, tab, loadBrowse, loadArchived]);
+  }, [agentId, tab, archivedView, loadBrowse, loadArchived, loadBatches]);
 
   const handleSemanticSearch = async () => {
     if (!agentId.trim() || !query.trim()) return;
@@ -474,9 +522,25 @@ export default function MemoryExplorerClient({
       {/* ── Archived tab ────────────────────────────────────────────────── */}
       {tab === "archived" && (
         <div className="space-y-4">
-          <div className="flex justify-end">
+          {/* Sub-nav: Memories / Batch History */}
+          <div className="flex items-center justify-between">
+            <div className="flex gap-1 text-sm">
+              {(["memories", "history"] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setArchivedView(v)}
+                  className={`px-3 py-1.5 rounded-lg transition-colors capitalize ${
+                    archivedView === v
+                      ? "bg-zinc-800 text-zinc-100"
+                      : "text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  {v === "history" ? "Batch History" : "Archived Memories"}
+                </button>
+              ))}
+            </div>
             <button
-              onClick={loadArchived}
+              onClick={archivedView === "memories" ? loadArchived : loadBatches}
               disabled={loading || !agentId}
               className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-zinc-700 hover:bg-zinc-800 disabled:opacity-40 transition-colors"
             >
@@ -484,68 +548,113 @@ export default function MemoryExplorerClient({
               Refresh
             </button>
           </div>
+
           {!agentId ? (
             <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-12 text-center text-zinc-500 text-sm">
-              Enter an Agent ID above to view its archived memories.
+              Enter an Agent ID above.
             </div>
           ) : loading ? (
             <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-12 text-center text-zinc-500 text-sm animate-pulse">
               Loading…
             </div>
-          ) : archivedData && archivedData.memories.length === 0 ? (
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-12 text-center text-zinc-500 text-sm">
-              No archived memories for <code className="bg-zinc-800 px-1 rounded">{agentId}</code>.
-              <p className="mt-2 text-zinc-600">Memories are archived automatically by the LTM compaction job.</p>
-            </div>
-          ) : archivedData ? (
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900 overflow-hidden">
-              <div className="px-5 py-3 border-b border-zinc-800">
-                <span className="text-sm font-semibold">
+          ) : archivedView === "memories" ? (
+            /* ── Individual archived memories ──────────────────────────── */
+            archivedData && archivedData.memories.length === 0 ? (
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-12 text-center text-zinc-500 text-sm">
+                No archived memories for <code className="bg-zinc-800 px-1 rounded">{agentId}</code>.
+                <p className="mt-2 text-zinc-600">Memories are tombstoned automatically by the LTM compaction job.</p>
+              </div>
+            ) : archivedData ? (
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900 overflow-hidden">
+                <div className="px-5 py-3 border-b border-zinc-800 text-sm font-semibold">
                   Archived Memories
                   <span className="text-zinc-500 font-normal ml-2">
                     {archivedData.memories.length} shown / {archivedData.total} total
                   </span>
-                </span>
+                </div>
+                <div className="divide-y divide-zinc-800">
+                  {archivedData.memories.map((m) => (
+                    <div key={m.id} className="px-5 py-4 hover:bg-zinc-800/40 transition-colors group">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-zinc-400 leading-relaxed">{m.content}</p>
+                          <div className="flex flex-wrap items-center gap-2 mt-2">
+                            <span className={`text-xs px-2 py-0.5 rounded-full border ${TYPE_COLORS[m.memory_type] ?? "bg-zinc-700 text-zinc-300 border-zinc-600"}`}>
+                              {m.memory_type}
+                            </span>
+                            <span className={`text-xs ${PROV_COLORS[m.provenance] ?? "text-zinc-500"}`}>{m.provenance}</span>
+                            <ImportanceBadge score={m.importance_score} source={m.importance_source} />
+                            <span className="text-xs text-zinc-500">conf: {(m.confidence * 100).toFixed(0)}%</span>
+                            <span className="text-xs text-zinc-500">created: {new Date(m.created_at).toLocaleString()}</span>
+                            <span className="text-xs text-amber-600">archived: {new Date(m.archived_at).toLocaleString()}</span>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleRestore(m.id)}
+                          className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1.5 rounded-lg hover:bg-green-500/20 hover:text-green-400 text-zinc-600 transition-all shrink-0 text-xs"
+                          title="Restore this memory"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          Restore
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <div className="divide-y divide-zinc-800">
-                {archivedData.memories.map((m) => (
-                  <div key={m.id} className="px-5 py-4 hover:bg-zinc-800/40 transition-colors group">
-                    <div className="flex items-start justify-between gap-4">
+            ) : null
+          ) : (
+            /* ── Batch history ─────────────────────────────────────────── */
+            batchData && batchData.batches.length === 0 ? (
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-12 text-center text-zinc-500 text-sm">
+                No archival batches yet for <code className="bg-zinc-800 px-1 rounded">{agentId}</code>.
+                <p className="mt-2 text-zinc-600">Batches are created each time the LTM compaction job runs.</p>
+              </div>
+            ) : batchData ? (
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900 overflow-hidden">
+                <div className="px-5 py-3 border-b border-zinc-800 text-sm font-semibold">
+                  Archival Batch History
+                  <span className="text-zinc-500 font-normal ml-2">
+                    {batchData.batches.length} batches
+                  </span>
+                </div>
+                <div className="divide-y divide-zinc-800">
+                  {batchData.batches.map((b) => (
+                    <div key={b.id} className="px-5 py-4 hover:bg-zinc-800/40 transition-colors group flex items-center gap-4">
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm text-zinc-400 leading-relaxed">{m.content}</p>
-                        <div className="flex flex-wrap items-center gap-2 mt-2">
-                          <span className={`text-xs px-2 py-0.5 rounded-full border ${TYPE_COLORS[m.memory_type] ?? "bg-zinc-700 text-zinc-300 border-zinc-600"}`}>
-                            {m.memory_type}
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                            b.status === "completed"
+                              ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                              : "bg-zinc-700/40 text-zinc-500 border border-zinc-700"
+                          }`}>
+                            {b.status}
                           </span>
-                          <span className={`text-xs ${PROV_COLORS[m.provenance] ?? "text-zinc-500"}`}>
-                            {m.provenance}
+                          <span className="text-sm text-zinc-300">
+                            {b.source_count} L2 → {b.l3_count} L3
                           </span>
-                          <ImportanceBadge score={m.importance_score} source={m.importance_source} />
                           <span className="text-xs text-zinc-500">
-                            conf: {(m.confidence * 100).toFixed(0)}%
-                          </span>
-                          <span className="text-xs text-zinc-500">
-                            created: {new Date(m.created_at).toLocaleString()}
-                          </span>
-                          <span className="text-xs text-amber-600">
-                            archived: {new Date(m.archived_at).toLocaleString()}
+                            {new Date(b.created_at).toLocaleString()}
                           </span>
                         </div>
+                        <p className="text-xs text-zinc-600 font-mono mt-1 truncate">{b.id}</p>
                       </div>
-                      <button
-                        onClick={() => handleRestore(m.id)}
-                        className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1.5 rounded-lg hover:bg-green-500/20 hover:text-green-400 text-zinc-600 transition-all shrink-0 text-xs"
-                        title="Restore memory"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        Restore
-                      </button>
+                      {b.status === "completed" && (
+                        <button
+                          onClick={() => handleRestoreBatch(b.id)}
+                          className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-3 py-1.5 rounded-lg bg-green-600/20 hover:bg-green-500/30 text-green-400 transition-all shrink-0 text-xs font-medium"
+                          title="Restore entire batch"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          Restore Batch
+                        </button>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          ) : null}
+            ) : null
+          )}
         </div>
       )}
 

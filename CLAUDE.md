@@ -63,6 +63,8 @@ Every `POST /v1/chat/completions` goes through `src/proxy.rs`:
 
 Archival job (`src/archival.rs`) runs on `ARCHIVAL_INTERVAL_HOURS` schedule: compacts stale zero-access L2 facts into L3 via LLM compression, then tombstones (sets `archived_at = NOW()`) originals. All queries filter `AND archived_at IS NULL` — nothing is hard-deleted.
 
+Each compaction run creates an **archival batch** (`archival_batches` table) that links the tombstoned L2 sources and the new L3 facts via `memories.archival_batch_id`. This enables atomic batch-level restore: `POST /api/v1/archival/batches/:batch_id/restore` un-tombstones L2 memories and re-tombstones the L3 facts that replaced them, then sets `batch.status = 'restored'`. A restored batch cannot be restored again (idempotency guard).
+
 ### Decay-weighted retrieval
 
 `search_memories_filtered` uses a two-CTE SQL pattern:
@@ -153,6 +155,21 @@ AppState {
     rate_limiter: Arc<RateLimiter>,
 }
 ```
+
+### Management API summary
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/agents` | List all agents |
+| GET | `/api/v1/agents/:id/memories` | Paginated live memories |
+| POST | `/api/v1/agents/:id/memories` | Create memory manually |
+| GET | `/api/v1/agents/:id/memories/archived` | Tombstoned memories |
+| GET | `/api/v1/agents/:id/archival/batches` | Archival batch history |
+| POST | `/api/v1/memories/search` | Semantic search |
+| DELETE | `/api/v1/memories/:id` | Hard-delete a memory |
+| POST | `/api/v1/memories/:id/restore` | Restore individual tombstoned memory |
+| POST | `/api/v1/archival/batches/:id/restore` | Restore entire batch (L2 back, L3 tombstoned) |
+| GET | `/api/v1/stats` | Agent + memory counts |
 
 ### Observability
 

@@ -4,7 +4,7 @@ use sqlx::QueryBuilder;
 use uuid::Uuid;
 
 use crate::{
-    models::{Memory, MemorySearchRow, WorkingMemory},
+    models::{ArchivalBatch, ArchivedMemory, Memory, MemorySearchRow, WorkingMemory},
     AppState,
 };
 
@@ -56,6 +56,7 @@ pub async fn store_memory(
         provenance,
         importance_score,
         importance_source,
+        None,
     )
     .await
 }
@@ -73,13 +74,16 @@ pub async fn store_memory_with_tier(
     provenance: &str,
     importance_score: f32,
     importance_source: &str,
+    archival_batch_id: Option<Uuid>,
 ) -> Result<Uuid> {
     let vec = Vector::from(embedding);
     let row: (Uuid,) = sqlx::query_as(
         r#"
         INSERT INTO memories
-            (agent_id, session_id, content, memory_type, confidence, embedding, source_turn, tier, provenance, importance_score, importance_source)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            (agent_id, session_id, content, memory_type, confidence, embedding,
+             source_turn, tier, provenance, importance_score, importance_source,
+             archival_batch_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING id
         "#,
     )
@@ -94,6 +98,7 @@ pub async fn store_memory_with_tier(
     .bind(provenance)
     .bind(importance_score)
     .bind(importance_source)
+    .bind(archival_batch_id)
     .fetch_one(&state.db)
     .await?;
     Ok(row.0)
@@ -472,6 +477,132 @@ pub async fn tombstone_memories(state: &AppState, ids: &[Uuid]) -> Result<u64> {
     Ok(r.rows_affected())
 }
 
+// ── Archival batch versioning ─────────────────────────────────────────────────
+
+/// Create an archival batch record before compacting. Returns the new batch id.
+pub async fn create_archival_batch(
+    state: &AppState,
+    agent_id: &str,
+    source_count: i32,
+    l3_count: i32,
+) -> Result<Uuid> {
+    let row: (Uuid,) = sqlx::query_as(
+        "INSERT INTO archival_batches (agent_id, source_count, l3_count)
+         VALUES ($1, $2, $3) RETURNING id",
+    )
+    .bind(agent_id)
+    .bind(source_count)
+    .bind(l3_count)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(row.0)
+}
+
+/// Tombstone L2 memories and tag them with the batch that archived them.
+pub async fn tombstone_memories_with_batch(
+    state: &AppState,
+    ids: &[Uuid],
+    batch_id: Uuid,
+) -> Result<u64> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
+        "UPDATE memories SET archived_at = NOW(), archival_batch_id = ",
+    );
+    qb.push_bind(batch_id);
+    qb.push(" WHERE id IN (");
+    let mut sep = qb.separated(", ");
+    for id in ids {
+        sep.push_bind(id);
+    }
+    qb.push(")");
+    let r = qb.build().execute(&state.db).await?;
+    Ok(r.rows_affected())
+}
+
+/// List archival batches for an agent, newest first.
+pub async fn list_archival_batches(
+    state: &AppState,
+    agent_id: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<ArchivalBatch>> {
+    sqlx::query_as(
+        "SELECT id, agent_id, created_at, source_count, l3_count, status
+         FROM archival_batches
+         WHERE agent_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2 OFFSET $3",
+    )
+    .bind(agent_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await
+    .map_err(Into::into)
+}
+
+/// Count archival batches for an agent.
+pub async fn count_archival_batches(state: &AppState, agent_id: &str) -> Result<i64> {
+    let row: (i64,) =
+        sqlx::query_as("SELECT COUNT(*)::bigint FROM archival_batches WHERE agent_id = $1")
+            .bind(agent_id)
+            .fetch_one(&state.db)
+            .await?;
+    Ok(row.0)
+}
+
+pub struct RestoreResult {
+    pub l2_restored: u64,
+    pub l3_tombstoned: u64,
+}
+
+/// Restore an archival batch:
+///   - un-tombstones the L2 source memories (clears archived_at)
+///   - tombstones the L3 compressed facts that replaced them
+///   - marks the batch status = 'restored'
+///
+/// Returns `None` if the batch does not exist or is already restored.
+pub async fn restore_archival_batch(
+    state: &AppState,
+    batch_id: Uuid,
+) -> Result<Option<RestoreResult>> {
+    // Guard: only restore a completed batch
+    let updated = sqlx::query(
+        "UPDATE archival_batches SET status = 'restored'
+         WHERE id = $1 AND status = 'completed'",
+    )
+    .bind(batch_id)
+    .execute(&state.db)
+    .await?;
+
+    if updated.rows_affected() == 0 {
+        return Ok(None);
+    }
+
+    let l2 = sqlx::query(
+        "UPDATE memories SET archived_at = NULL
+         WHERE archival_batch_id = $1 AND tier = 'L2' AND archived_at IS NOT NULL",
+    )
+    .bind(batch_id)
+    .execute(&state.db)
+    .await?;
+
+    let l3 = sqlx::query(
+        "UPDATE memories SET archived_at = NOW()
+         WHERE archival_batch_id = $1 AND tier = 'L3' AND archived_at IS NULL",
+    )
+    .bind(batch_id)
+    .execute(&state.db)
+    .await?;
+
+    Ok(Some(RestoreResult {
+        l2_restored: l2.rows_affected(),
+        l3_tombstoned: l3.rows_affected(),
+    }))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -777,5 +908,111 @@ mod tests {
                 "high-importance should rank first with boost enabled"
             );
         }
+    }
+
+    // ── Archival batch round-trip ─────────────────────────────────────────────
+    //
+    // Simulates the full L2→L3 compaction + restore cycle:
+    //   1. Store two L2 memories.
+    //   2. Create an archival batch and tombstone the L2 memories.
+    //   3. Store two L3 facts tagged with the batch_id.
+    //   4. Verify the L2 memories are excluded from live search/list.
+    //   5. Call restore_archival_batch.
+    //   6. Verify L2 memories are live again and L3 facts are tombstoned.
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn archival_batch_roundtrip(pool: sqlx::PgPool) {
+        let state = build_state(pool.clone(), 0.0);
+        const AGENT: &str = "batch-roundtrip-agent";
+
+        upsert_agent(&state, AGENT).await.unwrap();
+
+        let id_a = store_memory(
+            &state, AGENT, None, "L2 fact A",
+            "episodic", 0.9, unit_vec(0), None, "user_stated", 0.5, "extractor",
+        ).await.unwrap();
+        let id_b = store_memory(
+            &state, AGENT, None, "L2 fact B",
+            "episodic", 0.9, unit_vec(1), None, "user_stated", 0.5, "extractor",
+        ).await.unwrap();
+
+        // Both L2 memories are live
+        let before = list_memories_for_agent(&state, AGENT, 10, 0).await.unwrap();
+        assert_eq!(before.len(), 2, "both L2 facts should be live before archival");
+
+        let batch_id = create_archival_batch(&state, AGENT, 2, 2).await.unwrap();
+
+        // Tombstone L2 memories with batch
+        tombstone_memories_with_batch(&state, &[id_a, id_b], batch_id).await.unwrap();
+
+        // Store L3 compressed facts tagged with the same batch
+        let l3_a = store_memory_with_tier(
+            &state, AGENT, None, "L3 compressed fact A",
+            "semantic", 0.7, unit_vec(10), None, "L3", "inferred", 0.5, "extractor",
+            Some(batch_id),
+        ).await.unwrap();
+        let l3_b = store_memory_with_tier(
+            &state, AGENT, None, "L3 compressed fact B",
+            "semantic", 0.7, unit_vec(11), None, "L3", "inferred", 0.5, "extractor",
+            Some(batch_id),
+        ).await.unwrap();
+
+        // L2 memories excluded after tombstone
+        let after_archival = list_memories_for_agent(&state, AGENT, 10, 0).await.unwrap();
+        assert!(
+            after_archival.iter().all(|m| !["L2 fact A", "L2 fact B"].contains(&m.content.as_str())),
+            "tombstoned L2 facts must not appear in live list"
+        );
+
+        // Restore the batch
+        let result = restore_archival_batch(&state, batch_id).await.unwrap();
+        let result = result.expect("restore should succeed for a completed batch");
+        assert_eq!(result.l2_restored, 2, "should restore 2 L2 memories");
+        assert_eq!(result.l3_tombstoned, 2, "should tombstone 2 L3 facts");
+
+        // L2 memories are live again
+        let after_restore = list_memories_for_agent(&state, AGENT, 10, 0).await.unwrap();
+        let contents: Vec<&str> = after_restore.iter().map(|m| m.content.as_str()).collect();
+        assert!(contents.contains(&"L2 fact A"), "L2 fact A must be live after restore");
+        assert!(contents.contains(&"L2 fact B"), "L2 fact B must be live after restore");
+
+        // L3 facts are tombstoned (not in live list)
+        assert!(
+            after_restore.iter().all(|m| m.id != l3_a && m.id != l3_b),
+            "L3 facts must be tombstoned after restore"
+        );
+
+        // Batch status is 'restored'
+        let batch: Vec<ArchivalBatch> = list_archival_batches(&state, AGENT, 10, 0).await.unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].status, "restored");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn restore_already_restored_batch_returns_none(pool: sqlx::PgPool) {
+        let state = build_state(pool, 0.0);
+        const AGENT: &str = "double-restore-agent";
+
+        upsert_agent(&state, AGENT).await.unwrap();
+
+        let id = store_memory(
+            &state, AGENT, None, "L2 memory",
+            "episodic", 0.9, unit_vec(0), None, "user_stated", 0.5, "extractor",
+        ).await.unwrap();
+
+        let batch_id = create_archival_batch(&state, AGENT, 1, 1).await.unwrap();
+        tombstone_memories_with_batch(&state, &[id], batch_id).await.unwrap();
+        store_memory_with_tier(
+            &state, AGENT, None, "L3 fact", "semantic", 0.7,
+            unit_vec(5), None, "L3", "inferred", 0.5, "extractor", Some(batch_id),
+        ).await.unwrap();
+
+        // First restore succeeds
+        let first = restore_archival_batch(&state, batch_id).await.unwrap();
+        assert!(first.is_some(), "first restore must succeed");
+
+        // Second restore returns None (already restored)
+        let second = restore_archival_batch(&state, batch_id).await.unwrap();
+        assert!(second.is_none(), "restoring an already-restored batch must return None");
     }
 }

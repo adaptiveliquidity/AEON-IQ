@@ -113,6 +113,17 @@ pub struct ArchivedMemory {
     pub archived_at: DateTime<Utc>,
 }
 
+/// A row from the `archival_batches` table — one per L2→L3 compaction run.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ArchivalBatch {
+    pub id: Uuid,
+    pub agent_id: String,
+    pub created_at: DateTime<Utc>,
+    pub source_count: i32,
+    pub l3_count: i32,
+    pub status: String,
+}
+
 /// Row returned by vector-similarity search — includes the computed distance.
 #[derive(Debug, sqlx::FromRow)]
 pub struct MemorySearchRow {

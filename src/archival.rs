@@ -130,8 +130,17 @@ async fn archive_agent(
         return Ok(());
     }
 
-    // ── Batch-embed all compressed facts, then store as L3 ───────────────────
+    // ── Create versioned batch record before mutating any rows ───────────────
     let stored_count = compressed.len();
+    let batch_id = store::create_archival_batch(
+        state,
+        agent_id,
+        count as i32,
+        stored_count as i32,
+    )
+    .await?;
+
+    // ── Batch-embed all compressed facts, then store as L3 ───────────────────
     let fact_refs: Vec<&str> = compressed.iter().map(|s| s.as_str()).collect();
     match embed_texts(state, &fact_refs).await {
         Ok(embeddings) => {
@@ -149,6 +158,7 @@ async fn archive_agent(
                     "inferred",
                     0.5_f32,
                     "extractor",
+                    Some(batch_id),
                 )
                 .await
                 {
@@ -162,9 +172,9 @@ async fn archive_agent(
         }
     }
 
-    // ── Tombstone originals (non-destructive) ─────────────────────────────────
+    // ── Tombstone originals and tag them with the batch ───────────────────────
     let ids: Vec<uuid::Uuid> = candidates.iter().map(|(id, _)| *id).collect();
-    let tombstoned = store::tombstone_memories(state, &ids).await?;
+    let tombstoned = store::tombstone_memories_with_batch(state, &ids, batch_id).await?;
 
     state
         .metrics
@@ -173,6 +183,7 @@ async fn archive_agent(
 
     info!(
         agent_id = %agent_id,
+        batch = %batch_id,
         original = count,
         compressed = stored_count,
         tombstoned,

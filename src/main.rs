@@ -96,14 +96,16 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Management sub-router (authenticated) ─────────────────────────────────
     let management = Router::new()
-        .route("/agents",                              get(api::list_agents))
-        .route("/agents/:agent_id/memories",           get(api::list_memories))
-        .route("/agents/:agent_id/memories",           post(api::create_memory))
-        .route("/agents/:agent_id/memories/archived",  get(api::list_archived_memories))
-        .route("/memories/search",                     post(api::search_memories_semantic))
-        .route("/memories/:id",                        delete(api::delete_memory))
-        .route("/memories/:id/restore",                post(api::restore_memory))
-        .route("/stats",                               get(api::get_stats))
+        .route("/agents",                                       get(api::list_agents))
+        .route("/agents/:agent_id/memories",                    get(api::list_memories))
+        .route("/agents/:agent_id/memories",                    post(api::create_memory))
+        .route("/agents/:agent_id/memories/archived",           get(api::list_archived_memories))
+        .route("/agents/:agent_id/archival/batches",            get(api::list_archival_batches))
+        .route("/memories/search",                              post(api::search_memories_semantic))
+        .route("/memories/:id",                                 delete(api::delete_memory))
+        .route("/memories/:id/restore",                         post(api::restore_memory))
+        .route("/archival/batches/:batch_id/restore",           post(api::restore_archival_batch))
+        .route("/stats",                                        get(api::get_stats))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::check_management_key,
