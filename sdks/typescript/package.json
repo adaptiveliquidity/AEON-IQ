@@ -1,0 +1,33 @@
+{
+  "name": "@aeon-iq/client",
+  "version": "0.1.0",
+  "description": "TypeScript client SDK for AEON-IQ MemoryOS — persistent memory for AI agents",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc && node scripts/build-esm.js",
+    "test": "node --test dist/index.test.js",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "keywords": ["memory", "agent", "ai", "llm", "aeon-iq", "memoryos"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}
