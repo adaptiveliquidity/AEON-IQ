@@ -75,6 +75,8 @@ interface SessionList {
 interface MemoryList {
   memories: MemoryDto[];
   total: number;
+  offset: number;
+  limit: number;
 }
 
 interface ArchivedMemoryList {
@@ -125,6 +127,8 @@ export default function MemoryExplorerClient({
   // Browse tab
   const [browseData, setBrowseData]     = useState<MemoryList | null>(null);
   const [browseFilter, setBrowseFilter] = useState("");
+  const [browsePage, setBrowsePage]     = useState(0);
+  const browseLimit                     = 50;
   const [adding, setAdding]             = useState(false);
   const [newContent, setNewContent]     = useState("");
   const [newType, setNewType]           = useState("semantic");
@@ -153,13 +157,14 @@ export default function MemoryExplorerClient({
 
   // ── Data fetchers ──────────────────────────────────────────────────────────
 
-  const loadBrowse = useCallback(async () => {
+  const loadBrowse = useCallback(async (page = browsePage) => {
     if (!agentId.trim()) return;
     setLoading(true);
     setError(null);
     try {
+      const offset = page * browseLimit;
       const res = await fetch(
-        `/api/agents/${encodeURIComponent(agentId)}/memories`
+        `/api/agents/${encodeURIComponent(agentId)}/memories?limit=${browseLimit}&offset=${offset}`
       );
       if (!res.ok) throw new Error(await res.text());
       setBrowseData(await res.json());
@@ -168,7 +173,7 @@ export default function MemoryExplorerClient({
     } finally {
       setLoading(false);
     }
-  }, [agentId]);
+  }, [agentId, browsePage, browseLimit]);
 
   const loadArchived = useCallback(async () => {
     if (!agentId.trim()) return;
@@ -499,7 +504,8 @@ export default function MemoryExplorerClient({
           <MemoryTable
             memories={filteredBrowse}
             total={browseData?.total}
-            loaded={filteredBrowse.length}
+            offset={browseData?.offset ?? 0}
+            limit={browseLimit}
             agentId={agentId}
             loading={loading}
             editingId={editingId}
@@ -509,6 +515,10 @@ export default function MemoryExplorerClient({
             onEditSave={handleEditSave}
             onEditCancel={handleEditCancel}
             onDelete={handleDelete}
+            onPrev={() => { const p = Math.max(0, browsePage - 1); setBrowsePage(p); loadBrowse(p); }}
+            onNext={() => { const p = browsePage + 1; setBrowsePage(p); loadBrowse(p); }}
+            hasPrev={browsePage > 0}
+            hasNext={browseData ? (browsePage + 1) * browseLimit < browseData.total : false}
           />
         </div>
       )}
@@ -905,7 +915,8 @@ function ImportanceBadge({ score, source }: { score: number; source: string }) {
 function MemoryTable({
   memories,
   total,
-  loaded,
+  offset,
+  limit,
   agentId,
   loading,
   editingId,
@@ -915,10 +926,15 @@ function MemoryTable({
   onEditSave,
   onEditCancel,
   onDelete,
+  onPrev,
+  onNext,
+  hasPrev,
+  hasNext,
 }: {
   memories: MemoryDto[];
   total: number | undefined;
-  loaded: number;
+  offset: number;
+  limit: number;
   agentId: string;
   loading: boolean;
   editingId: string | null;
@@ -928,6 +944,10 @@ function MemoryTable({
   onEditSave: (id: string) => void;
   onEditCancel: () => void;
   onDelete: (id: string) => void;
+  onPrev: () => void;
+  onNext: () => void;
+  hasPrev: boolean;
+  hasNext: boolean;
 }) {
   if (!agentId) {
     return (
@@ -950,15 +970,36 @@ function MemoryTable({
       </div>
     );
   }
+  const from = total === 0 ? 0 : offset + 1;
+  const to   = Math.min(offset + memories.length, total ?? 0);
+
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900 overflow-hidden">
-      <div className="px-5 py-3 border-b border-zinc-800">
+      <div className="px-5 py-3 border-b border-zinc-800 flex items-center justify-between">
         <span className="text-sm font-semibold">
           Memories
           <span className="text-zinc-500 font-normal ml-2">
-            {loaded} shown / {total ?? "?"} total
+            {total != null && total > 0
+              ? `${from}–${to} of ${total.toLocaleString()}`
+              : `${memories.length} shown`}
           </span>
         </span>
+        <div className="flex gap-1">
+          <button
+            onClick={onPrev}
+            disabled={!hasPrev}
+            className="px-2.5 py-1 text-xs rounded-lg border border-zinc-700 hover:bg-zinc-800 disabled:opacity-30 transition-colors"
+          >
+            ← Prev
+          </button>
+          <button
+            onClick={onNext}
+            disabled={!hasNext}
+            className="px-2.5 py-1 text-xs rounded-lg border border-zinc-700 hover:bg-zinc-800 disabled:opacity-30 transition-colors"
+          >
+            Next →
+          </button>
+        </div>
       </div>
       <div className="divide-y divide-zinc-800">
         {memories.map((m) => (

@@ -15,11 +15,11 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const { id } = await params;
   if (!session.user.isAdmin && id !== session.user.agentId) return forbidden();
 
+  const { searchParams } = new URL(req.url);
+  const qs = searchParams.toString();
   try {
-    const res = await fetch(
-      backendUrl(`/api/v1/agents/${encodeURIComponent(id)}/memories`),
-      { cache: "no-store", headers: mgmtHeaders() }
-    );
+    const url = backendUrl(`/api/v1/agents/${encodeURIComponent(id)}/memories${qs ? `?${qs}` : ""}`);
+    const res = await fetch(url, { cache: "no-store", headers: mgmtHeaders() });
     return NextResponse.json(await res.json(), { status: res.status });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 502 });
