@@ -28,6 +28,43 @@ pub async fn count_agents(state: &AppState) -> Result<i64> {
     Ok(row.0)
 }
 
+/// Delete an agent and all associated data in a single transaction.
+///
+/// Returns `true` if the agent existed and was deleted, `false` if not found.
+pub async fn delete_agent(state: &AppState, agent_id: &str) -> Result<bool> {
+    let mut tx = state.db.begin().await?;
+
+    // memories must be deleted before archival_batches (FK: memories.archival_batch_id)
+    sqlx::query("DELETE FROM memories WHERE agent_id = $1")
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM working_memory WHERE agent_id = $1")
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM entities WHERE agent_id = $1")
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM memory_graph WHERE agent_id = $1")
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM audit_logs WHERE agent_id = $1")
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await?;
+    // sessions and archival_batches cascade from agents; delete agent row last
+    let result = sqlx::query("DELETE FROM agents WHERE agent_id = $1")
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(result.rows_affected() > 0)
+}
+
 // ── Memories ──────────────────────────────────────────────────────────────────
 
 pub async fn store_memory(

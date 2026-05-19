@@ -446,7 +446,7 @@ export default function MemoryExplorerClient({
               />
             </div>
             <button
-              onClick={loadBrowse}
+              onClick={() => loadBrowse()}
               disabled={loading || !agentId}
               className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-zinc-700 hover:bg-zinc-800 disabled:opacity-40 transition-colors"
             >

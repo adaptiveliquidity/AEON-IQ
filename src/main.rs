@@ -103,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
     // ── Management sub-router (authenticated) ─────────────────────────────────
     let management = Router::new()
         .route("/agents",                                       get(api::list_agents))
+        .route("/agents/:agent_id",                             delete(api::delete_agent))
         .route("/agents/:agent_id/memories",                    get(api::list_memories))
         .route("/agents/:agent_id/memories",                    post(api::create_memory))
         .route("/agents/:agent_id/memories/archived",           get(api::list_archived_memories))

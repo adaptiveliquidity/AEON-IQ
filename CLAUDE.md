@@ -164,10 +164,16 @@ AppState {
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/agents` | List all agents |
+| DELETE | `/api/v1/agents/:id` | Delete agent and all its data (cascade) |
 | GET | `/api/v1/agents/:id/memories` | Paginated live memories |
 | POST | `/api/v1/agents/:id/memories` | Create memory manually |
+| PATCH | `/api/v1/memories/:id` | Update memory content (re-embeds) |
 | GET | `/api/v1/agents/:id/memories/archived` | Tombstoned memories |
 | GET | `/api/v1/agents/:id/archival/batches` | Archival batch history |
+| POST | `/api/v1/agents/:id/archival/trigger` | Manually trigger L2→L3 compaction |
+| GET | `/api/v1/agents/:id/sessions` | List sessions with turn counts |
+| GET | `/api/v1/agents/:id/sessions/:sid` | Session detail + working memory |
+| DELETE | `/api/v1/agents/:id/sessions/:sid` | Delete session working memory |
 | POST | `/api/v1/memories/search` | Semantic search |
 | DELETE | `/api/v1/memories/:id` | Hard-delete a memory |
 | POST | `/api/v1/memories/:id/restore` | Restore individual tombstoned memory |

@@ -304,6 +304,21 @@ pub async fn list_agents(
     }))
 }
 
+pub async fn delete_agent(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let deleted = store::delete_agent(&state, &agent_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, format!("agent '{}' not found", agent_id)))
+    }
+}
+
 pub async fn list_memories(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
