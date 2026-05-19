@@ -103,9 +103,9 @@ impl Provider {
 
         Bytes::from(format!(
             "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-            serde_json::to_string(&role_chunk).unwrap(),
-            serde_json::to_string(&content_chunk).unwrap(),
-            serde_json::to_string(&stop_chunk).unwrap(),
+            serde_json::to_string(&role_chunk).expect("serde_json::json! value; infallible"),
+            serde_json::to_string(&content_chunk).expect("serde_json::json! value; infallible"),
+            serde_json::to_string(&stop_chunk).expect("serde_json::json! value; infallible"),
         ))
     }
 }
