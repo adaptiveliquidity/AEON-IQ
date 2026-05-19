@@ -498,6 +498,18 @@ pub async fn create_archival_batch(
     Ok(row.0)
 }
 
+/// Mark an archival batch as failed so it is distinguishable from a
+/// successful batch that happened to produce zero L3 facts.
+pub async fn fail_archival_batch(state: &AppState, batch_id: Uuid) -> Result<()> {
+    sqlx::query(
+        "UPDATE archival_batches SET status = 'failed', completed_at = NOW() WHERE id = $1",
+    )
+    .bind(batch_id)
+    .execute(&state.db)
+    .await?;
+    Ok(())
+}
+
 /// Tombstone L2 memories and tag them with the batch that archived them.
 pub async fn tombstone_memories_with_batch(
     state: &AppState,
