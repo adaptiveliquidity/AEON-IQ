@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
+    archival,
     embeddings::embed_text,
     memory::store,
     models::{ArchivalBatch, ArchivedMemory, Memory, RelationRow, SessionInfo, WorkingMemory},
@@ -569,6 +570,37 @@ pub async fn restore_archival_batch(
             StatusCode::NOT_FOUND,
             format!("batch {} not found or already restored", batch_id),
         )),
+    }
+}
+
+// ── Archival trigger ──────────────────────────────────────────────────────────
+
+/// POST /api/v1/agents/:id/archival/trigger
+///
+/// Runs one compaction cycle for this agent synchronously.  Returns the batch
+/// info if compaction ran, or a message explaining why it was skipped.
+pub async fn trigger_archival(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let min_age  = state.config.archival_min_age_days as i64;
+    let min_mems = state.config.archival_min_memories;
+
+    match archival::archive_agent(&state, &agent_id, min_age, min_mems).await {
+        Ok(Some(r)) => Ok(Json(serde_json::json!({
+            "batch_id":     r.batch_id.to_string(),
+            "source_count": r.source_count,
+            "l3_count":     r.l3_count,
+            "status":       r.status,
+        }))),
+        Ok(None) => Ok(Json(serde_json::json!({
+            "status":  "skipped",
+            "reason":  format!(
+                "fewer than {} archivable memories older than {} day(s)",
+                min_mems, min_age
+            ),
+        }))),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
 

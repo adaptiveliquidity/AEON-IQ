@@ -4,7 +4,7 @@ use sqlx::QueryBuilder;
 use uuid::Uuid;
 
 use crate::{
-    models::{ArchivalBatch, ArchivedMemory, Memory, MemorySearchRow, WorkingMemory},
+    models::{ArchivalBatch, Memory, MemorySearchRow, WorkingMemory},
     AppState,
 };
 

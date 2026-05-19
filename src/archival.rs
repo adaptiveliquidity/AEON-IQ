@@ -15,8 +15,17 @@
 
 use anyhow::Result;
 use tracing::{error, info, warn};
+use uuid::Uuid;
 
 use crate::{embeddings::embed_texts, memory::store, AppState};
+
+/// Returned by `archive_agent` so callers (API + cron job) can report results.
+pub struct ArchivalResult {
+    pub batch_id: Uuid,
+    pub source_count: usize,
+    pub l3_count: usize,
+    pub status: &'static str,
+}
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -60,8 +69,11 @@ async fn run_cycle(state: &AppState) -> Result<()> {
     info!("Archival candidates: {} agents", agent_ids.len());
 
     for agent_id in agent_ids {
-        if let Err(e) = archive_agent(state, &agent_id, min_age, min_count).await {
-            warn!(agent_id = %agent_id, "Per-agent archival failed: {}", e);
+        match archive_agent(state, &agent_id, min_age, min_count).await {
+            Ok(Some(r)) => info!(agent_id = %agent_id, batch = %r.batch_id,
+                source = r.source_count, l3 = r.l3_count, "Archival complete"),
+            Ok(None)    => {},
+            Err(e)      => warn!(agent_id = %agent_id, "Per-agent archival failed: {}", e),
         }
     }
     Ok(())
@@ -69,16 +81,20 @@ async fn run_cycle(state: &AppState) -> Result<()> {
 
 // ── Per-agent compaction ──────────────────────────────────────────────────────
 
-async fn archive_agent(
+/// Compact stale L2 memories for one agent into L3 facts.
+///
+/// Returns `Ok(None)` when there are not enough candidates.
+/// Returns `Ok(Some(result))` on success.
+pub async fn archive_agent(
     state: &AppState,
     agent_id: &str,
     min_age_days: i64,
     min_memories: usize,
-) -> Result<()> {
+) -> Result<Option<ArchivalResult>> {
     let candidates = store::fetch_archivable_memories(state, agent_id, min_age_days, 50).await?;
 
     if candidates.len() < min_memories {
-        return Ok(());
+        return Ok(None);
     }
 
     let count = candidates.len();
@@ -127,7 +143,7 @@ async fn archive_agent(
     let compressed = parse_compressed_facts(raw);
     if compressed.is_empty() {
         warn!(agent_id = %agent_id, "No compressed facts returned — skipping deletion");
-        return Ok(());
+        return Ok(None);
     }
 
     // ── Create versioned batch record before mutating any rows ───────────────
@@ -149,7 +165,7 @@ async fn archive_agent(
             if let Err(fe) = store::fail_archival_batch(state, batch_id).await {
                 warn!(agent_id = %agent_id, "Could not mark batch as failed: {}", fe);
             }
-            return Ok(());
+            return Ok(None);
         }
     };
 
@@ -193,7 +209,12 @@ async fn archive_agent(
         "L2→L3 compaction complete"
     );
 
-    Ok(())
+    Ok(Some(ArchivalResult {
+        batch_id,
+        source_count: count,
+        l3_count: stored_count,
+        status: "completed",
+    }))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

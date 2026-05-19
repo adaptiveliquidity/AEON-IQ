@@ -107,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/agents/:agent_id/memories",                    post(api::create_memory))
         .route("/agents/:agent_id/memories/archived",           get(api::list_archived_memories))
         .route("/agents/:agent_id/archival/batches",            get(api::list_archival_batches))
+        .route("/agents/:agent_id/archival/trigger",            post(api::trigger_archival))
         .route("/agents/:agent_id/sessions",                    get(api::list_sessions))
         .route("/agents/:agent_id/sessions/:session_id",        get(api::get_session))
         .route("/agents/:agent_id/sessions/:session_id",        delete(api::delete_session))
