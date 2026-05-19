@@ -162,6 +162,19 @@ pub struct SessionInfo {
     pub summary_preview: Option<String>,
 }
 
+/// A row from the `memory_conflicts` table — a flagged contradiction between two memories.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MemoryConflict {
+    pub id: Uuid,
+    pub agent_id: String,
+    pub memory_a: Option<Uuid>,
+    pub memory_b: Option<Uuid>,
+    pub reason: String,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub resolution: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// A row from the `memory_graph` table (subject–predicate–object triple).
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct RelationRow {

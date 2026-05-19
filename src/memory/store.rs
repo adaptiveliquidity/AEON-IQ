@@ -127,14 +127,14 @@ pub async fn store_memory(
         }
     }
 
-    store_memory_with_tier(
+    let id = store_memory_with_tier(
         state,
         agent_id,
         session_id,
         content,
         memory_type,
         confidence,
-        embedding,
+        embedding.clone(),
         source_turn,
         "L2",
         provenance,
@@ -142,7 +142,20 @@ pub async fn store_memory(
         importance_source,
         None,
     )
-    .await
+    .await?;
+
+    // Spawn async conflict detection (only when enabled; never blocks the caller).
+    if state.config.conflict_detection_enabled {
+        let s = state.clone();
+        let aid = agent_id.to_string();
+        let c = content.to_string();
+        let emb = embedding;
+        tokio::spawn(async move {
+            crate::memory::conflicts::detect_and_store(&s, &aid, id, &c, &emb).await;
+        });
+    }
+
+    Ok(id)
 }
 
 pub async fn store_memory_with_tier(
@@ -781,6 +794,72 @@ pub async fn restore_archival_batch(
         l2_restored: l2.rows_affected(),
         l3_tombstoned: l3.rows_affected(),
     }))
+}
+
+// ── Conflict store ────────────────────────────────────────────────────────────
+
+pub async fn store_conflict(
+    state: &AppState,
+    agent_id: &str,
+    memory_a: Uuid,
+    memory_b: Uuid,
+    reason: &str,
+) -> Result<Uuid> {
+    let row: (Uuid,) = sqlx::query_as(
+        "INSERT INTO memory_conflicts (agent_id, memory_a, memory_b, reason) \
+         VALUES ($1, $2, $3, $4) RETURNING id",
+    )
+    .bind(agent_id)
+    .bind(memory_a)
+    .bind(memory_b)
+    .bind(reason)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(row.0)
+}
+
+pub async fn list_conflicts(
+    state: &AppState,
+    agent_id: &str,
+    include_resolved: bool,
+) -> Result<Vec<crate::models::MemoryConflict>> {
+    let rows = if include_resolved {
+        sqlx::query_as(
+            "SELECT id, agent_id, memory_a, memory_b, reason, resolved_at, resolution, created_at \
+             FROM memory_conflicts WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 200",
+        )
+        .bind(agent_id)
+        .fetch_all(&state.db)
+        .await?
+    } else {
+        sqlx::query_as(
+            "SELECT id, agent_id, memory_a, memory_b, reason, resolved_at, resolution, created_at \
+             FROM memory_conflicts WHERE agent_id = $1 AND resolved_at IS NULL \
+             ORDER BY created_at DESC LIMIT 200",
+        )
+        .bind(agent_id)
+        .fetch_all(&state.db)
+        .await?
+    };
+    Ok(rows)
+}
+
+/// Mark a conflict as resolved.  Returns `true` if found and unresolved, `false` otherwise.
+pub async fn resolve_conflict(
+    state: &AppState,
+    conflict_id: Uuid,
+    resolution: &str,
+) -> Result<bool> {
+    let r = sqlx::query(
+        "UPDATE memory_conflicts \
+         SET resolved_at = NOW(), resolution = $2 \
+         WHERE id = $1 AND resolved_at IS NULL",
+    )
+    .bind(conflict_id)
+    .bind(resolution)
+    .execute(&state.db)
+    .await?;
+    Ok(r.rows_affected() > 0)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

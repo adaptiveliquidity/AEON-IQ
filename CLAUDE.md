@@ -180,6 +180,8 @@ AppState {
 | DELETE | `/api/v1/memories/:id` | Hard-delete a memory |
 | POST | `/api/v1/memories/:id/restore` | Restore individual tombstoned memory |
 | POST | `/api/v1/archival/batches/:id/restore` | Restore entire batch (L2 back, L3 tombstoned) |
+| GET | `/api/v1/agents/:id/conflicts` | List unresolved (or all) memory conflicts |
+| POST | `/api/v1/conflicts/:id/resolve` | Resolve a conflict (keep_a/keep_b/keep_both/dismissed) |
 | GET | `/api/v1/stats` | Agent + memory counts |
 
 ### Observability

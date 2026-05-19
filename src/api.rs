@@ -10,7 +10,7 @@ use crate::{
     archival,
     embeddings::embed_text,
     memory::store,
-    models::{ArchivalBatch, ArchivedMemory, Memory, RelationRow, SessionInfo, WorkingMemory},
+    models::{ArchivalBatch, ArchivedMemory, Memory, MemoryConflict, RelationRow, SessionInfo, WorkingMemory},
     AppState,
 };
 
@@ -670,6 +670,105 @@ pub async fn delete_session(
         Err((
             StatusCode::NOT_FOUND,
             format!("no working memory for session {} / agent {}", session_id, agent_id),
+        ))
+    }
+}
+
+// ── Conflict types & handlers ─────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ConflictDto {
+    pub id: String,
+    pub memory_a: Option<String>,
+    pub memory_b: Option<String>,
+    pub reason: String,
+    pub resolved_at: Option<String>,
+    pub resolution: Option<String>,
+    pub created_at: String,
+}
+
+impl From<MemoryConflict> for ConflictDto {
+    fn from(c: MemoryConflict) -> Self {
+        Self {
+            id: c.id.to_string(),
+            memory_a: c.memory_a.map(|u| u.to_string()),
+            memory_b: c.memory_b.map(|u| u.to_string()),
+            reason: c.reason,
+            resolved_at: c.resolved_at.map(|t| t.to_rfc3339()),
+            resolution: c.resolution,
+            created_at: c.created_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct ConflictListResponse {
+    pub conflicts: Vec<ConflictDto>,
+    pub total: usize,
+}
+
+#[derive(Deserialize)]
+pub struct ResolveConflictBody {
+    /// One of: keep_a | keep_b | keep_both | dismissed
+    pub resolution: String,
+}
+
+#[derive(Deserialize, Default)]
+pub struct ConflictListParams {
+    /// When "true", include already-resolved conflicts.
+    pub include_resolved: Option<String>,
+}
+
+/// GET /api/v1/agents/:id/conflicts
+pub async fn list_conflicts(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(params): Query<ConflictListParams>,
+) -> Result<Json<ConflictListResponse>, (StatusCode, String)> {
+    let include_resolved = params
+        .include_resolved
+        .as_deref()
+        .map(|s| s.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    let conflicts = store::list_conflicts(&state, &agent_id, include_resolved)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total = conflicts.len();
+    Ok(Json(ConflictListResponse {
+        total,
+        conflicts: conflicts.into_iter().map(ConflictDto::from).collect(),
+    }))
+}
+
+/// POST /api/v1/conflicts/:id/resolve
+pub async fn resolve_conflict(
+    State(state): State<AppState>,
+    Path(conflict_id): Path<Uuid>,
+    Json(body): Json<ResolveConflictBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let valid = ["keep_a", "keep_b", "keep_both", "dismissed"];
+    if !valid.contains(&body.resolution.as_str()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "resolution must be one of: {}",
+                valid.join(", ")
+            ),
+        ));
+    }
+
+    let resolved = store::resolve_conflict(&state, conflict_id, &body.resolution)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if resolved {
+        Ok(Json(serde_json::json!({ "resolved": true, "resolution": body.resolution })))
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            format!("conflict {} not found or already resolved", conflict_id),
         ))
     }
 }
