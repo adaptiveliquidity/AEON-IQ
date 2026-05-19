@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 
 -- ── Sessions ──────────────────────────────────────────────────────────────────
+-- NOTE: sessions table is scaffolded; wired in Phase 1 (working memory API).
 CREATE TABLE IF NOT EXISTS sessions (
     id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id TEXT        NOT NULL,
