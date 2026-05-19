@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     embeddings::embed_text,
     memory::store,
-    models::{ArchivalBatch, ArchivedMemory, Memory, RelationRow},
+    models::{ArchivalBatch, ArchivedMemory, Memory, RelationRow, SessionInfo, WorkingMemory},
     AppState,
 };
 
@@ -143,6 +143,52 @@ pub struct StatsResponse {
     pub agent_count: i64,
     pub memory_count: i64,
     pub tokens_saved_estimate: i64,
+}
+
+// ── Session types ─────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct SessionDto {
+    pub session_id: String,
+    pub turn_count: i32,
+    pub updated_at: String,
+    pub summary_preview: Option<String>,
+}
+
+impl From<SessionInfo> for SessionDto {
+    fn from(s: SessionInfo) -> Self {
+        Self {
+            session_id: s.session_id,
+            turn_count: s.turn_count,
+            updated_at: s.updated_at.to_rfc3339(),
+            summary_preview: s.summary_preview,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct SessionDetailDto {
+    pub session_id: String,
+    pub turn_count: i32,
+    pub updated_at: String,
+    pub summary: Option<String>,
+}
+
+impl From<WorkingMemory> for SessionDetailDto {
+    fn from(w: WorkingMemory) -> Self {
+        Self {
+            session_id: w.session_id,
+            turn_count: w.turn_count,
+            updated_at: w.updated_at.to_rfc3339(),
+            summary: w.summary,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct SessionListResponse {
+    pub sessions: Vec<SessionDto>,
+    pub total: usize,
 }
 
 // ── Query params / bodies ─────────────────────────────────────────────────────
@@ -523,5 +569,60 @@ pub async fn restore_archival_batch(
             StatusCode::NOT_FOUND,
             format!("batch {} not found or already restored", batch_id),
         )),
+    }
+}
+
+// ── Session (working memory) handlers ────────────────────────────────────────
+
+/// GET /api/v1/agents/:id/sessions
+pub async fn list_sessions(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<SessionListResponse>, (StatusCode, String)> {
+    let sessions = store::list_sessions_for_agent(&state, &agent_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total = sessions.len();
+    Ok(Json(SessionListResponse {
+        total,
+        sessions: sessions.into_iter().map(SessionDto::from).collect(),
+    }))
+}
+
+/// GET /api/v1/agents/:id/sessions/:session_id
+pub async fn get_session(
+    State(state): State<AppState>,
+    Path((agent_id, session_id)): Path<(String, String)>,
+) -> Result<Json<SessionDetailDto>, (StatusCode, String)> {
+    let wm = store::get_session_detail(&state, &agent_id, &session_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    match wm {
+        Some(w) => Ok(Json(SessionDetailDto::from(w))),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            format!("no session {} for agent {}", session_id, agent_id),
+        )),
+    }
+}
+
+/// DELETE /api/v1/agents/:id/sessions/:session_id
+pub async fn delete_session(
+    State(state): State<AppState>,
+    Path((agent_id, session_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let deleted = store::delete_session_working_memory(&state, &agent_id, &session_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if deleted {
+        Ok(Json(serde_json::json!({ "deleted": true })))
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            format!("no working memory for session {} / agent {}", session_id, agent_id),
+        ))
     }
 }

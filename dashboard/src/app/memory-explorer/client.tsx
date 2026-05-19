@@ -15,6 +15,7 @@ import {
   Pencil,
   Check,
   X,
+  Clock,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -59,6 +60,18 @@ interface ArchivalBatchDto {
   status: "completed" | "restored";
 }
 
+interface SessionDto {
+  session_id: string;
+  turn_count: number;
+  updated_at: string;
+  summary_preview: string | null;
+}
+
+interface SessionList {
+  sessions: SessionDto[];
+  total: number;
+}
+
 interface MemoryList {
   memories: MemoryDto[];
   total: number;
@@ -94,7 +107,7 @@ const PROV_COLORS: Record<string, string> = {
   inferred:          "text-zinc-400",
 };
 
-const TABS = ["browse", "search", "graph", "archived"] as const;
+const TABS = ["browse", "search", "graph", "archived", "sessions"] as const;
 type Tab = (typeof TABS)[number];
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -126,6 +139,9 @@ export default function MemoryExplorerClient({
   const [archivedData, setArchivedData]   = useState<ArchivedMemoryList | null>(null);
   const [batchData, setBatchData]         = useState<ArchivalBatchList | null>(null);
   const [archivedView, setArchivedView]   = useState<"memories" | "history">("memories");
+
+  // Sessions tab
+  const [sessionData, setSessionData]     = useState<SessionList | null>(null);
 
   const [loading, setLoading]           = useState(false);
   const [error, setError]               = useState<string | null>(null);
@@ -188,6 +204,35 @@ export default function MemoryExplorerClient({
     }
   }, [agentId]);
 
+  const loadSessions = useCallback(async () => {
+    if (!agentId.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/sessions`);
+      if (!res.ok) throw new Error(await res.text());
+      setSessionData(await res.json());
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [agentId]);
+
+  const handleDeleteSession = async (sessionId: string) => {
+    if (!confirm(`Clear working memory for session ${sessionId}?`)) return;
+    try {
+      const res = await fetch(
+        `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) throw new Error(await res.text());
+      loadSessions();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const handleRestoreBatch = async (batchId: string) => {
     if (!confirm("Restore this archival batch? The original L2 memories will become live again and the compressed L3 facts will be tombstoned.")) return;
     try {
@@ -207,9 +252,10 @@ export default function MemoryExplorerClient({
         if (archivedView === "memories") loadArchived();
         else loadBatches();
       }
+      if (agentId && tab === "sessions") loadSessions();
     }, 400);
     return () => clearTimeout(t);
-  }, [agentId, tab, archivedView, loadBrowse, loadArchived, loadBatches]);
+  }, [agentId, tab, archivedView, loadBrowse, loadArchived, loadBatches, loadSessions]);
 
   const handleSemanticSearch = async () => {
     if (!agentId.trim() || !query.trim()) return;
@@ -356,6 +402,7 @@ export default function MemoryExplorerClient({
             { id: "search",    label: "Semantic Search",  icon: Brain },
             { id: "graph",     label: "Knowledge Graph",  icon: GitBranch },
             { id: "archived",  label: "Archived",         icon: Archive },
+            { id: "sessions",  label: "Sessions",         icon: Clock },
           ] as const
         ).map(({ id, label, icon: Icon }) => (
           <button
@@ -693,6 +740,83 @@ export default function MemoryExplorerClient({
                 </div>
               </div>
             ) : null
+          )}
+        </div>
+      )}
+
+      {/* ── Sessions tab ────────────────────────────────────────────────── */}
+      {tab === "sessions" && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-zinc-400">
+              Active L1 working-memory sessions for{" "}
+              <code className="bg-zinc-800 px-1 rounded">{agentId || "—"}</code>
+            </p>
+            <button
+              onClick={loadSessions}
+              disabled={loading || !agentId}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-zinc-700 hover:bg-zinc-800 disabled:opacity-40 transition-colors"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+              Refresh
+            </button>
+          </div>
+
+          {!agentId ? (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-12 text-center text-zinc-500 text-sm">
+              Enter an Agent ID above.
+            </div>
+          ) : loading ? (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-12 text-center text-zinc-500 text-sm animate-pulse">
+              Loading…
+            </div>
+          ) : !sessionData || sessionData.sessions.length === 0 ? (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-12 text-center text-zinc-500 text-sm">
+              No active sessions for{" "}
+              <code className="bg-zinc-800 px-1 rounded">{agentId}</code>.
+              <p className="mt-2 text-zinc-600">Sessions are created when the proxy receives its first turn.</p>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 overflow-hidden">
+              <div className="px-5 py-3 border-b border-zinc-800 text-sm font-semibold">
+                Sessions
+                <span className="text-zinc-500 font-normal ml-2">
+                  {sessionData.total} total
+                </span>
+              </div>
+              <div className="divide-y divide-zinc-800">
+                {sessionData.sessions.map((s) => (
+                  <div key={s.session_id} className="px-5 py-4 hover:bg-zinc-800/40 transition-colors group">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-mono text-zinc-400 truncate">{s.session_id}</p>
+                        {s.summary_preview && (
+                          <p className="text-sm text-zinc-300 mt-1 leading-relaxed line-clamp-2">
+                            {s.summary_preview}
+                          </p>
+                        )}
+                        <div className="flex items-center gap-3 mt-2">
+                          <span className="text-xs text-zinc-500">
+                            {s.turn_count} turn{s.turn_count !== 1 ? "s" : ""}
+                          </span>
+                          <span className="text-xs text-zinc-600">
+                            updated {new Date(s.updated_at).toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteSession(s.session_id)}
+                        className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1.5 rounded-lg hover:bg-red-500/20 hover:text-red-400 text-zinc-600 transition-all shrink-0 text-xs"
+                        title="Clear this session's working memory"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
         </div>
       )}

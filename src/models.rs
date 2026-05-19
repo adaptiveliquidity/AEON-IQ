@@ -152,6 +152,16 @@ pub struct WorkingMemory {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A single row from the `sessions` table (one per active session).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SessionInfo {
+    pub session_id: String,
+    pub agent_id: String,
+    pub turn_count: i32,
+    pub updated_at: DateTime<Utc>,
+    pub summary_preview: Option<String>,
+}
+
 /// A row from the `memory_graph` table (subject–predicate–object triple).
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct RelationRow {

@@ -350,7 +350,70 @@ pub async fn upsert_working_memory(
     .bind(summary)
     .execute(&state.db)
     .await?;
+
+    // Mirror turn_count into the sessions table so it stays queryable there.
+    sqlx::query(
+        r#"
+        INSERT INTO sessions (session_id, agent_id, turn_count)
+        VALUES ($1, $2, 1)
+        ON CONFLICT (agent_id, session_id) DO UPDATE
+            SET turn_count = EXCLUDED.turn_count + sessions.turn_count,
+                ended_at   = NULL
+        "#,
+    )
+    .bind(session_id)
+    .bind(agent_id)
+    .execute(&state.db)
+    .await?;
+
     Ok(())
+}
+
+/// List all sessions (working_memory rows) for an agent, newest first.
+/// Returns session_id, turn_count, updated_at, and a 150-char summary preview.
+pub async fn list_sessions_for_agent(
+    state: &AppState,
+    agent_id: &str,
+) -> Result<Vec<crate::models::SessionInfo>> {
+    let rows = sqlx::query_as::<_, crate::models::SessionInfo>(
+        r#"
+        SELECT session_id, agent_id, turn_count, updated_at,
+               LEFT(summary, 150) AS summary_preview
+        FROM working_memory
+        WHERE agent_id = $1
+        ORDER BY updated_at DESC
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(rows)
+}
+
+/// Fetch the full L1 summary for a single session.
+pub async fn get_session_detail(
+    state: &AppState,
+    agent_id: &str,
+    session_id: &str,
+) -> Result<Option<WorkingMemory>> {
+    get_working_memory(state, agent_id, session_id).await
+}
+
+/// Clear working memory for a session (hard-deletes the L1 summary row).
+/// Returns false if the session had no working memory entry.
+pub async fn delete_session_working_memory(
+    state: &AppState,
+    agent_id: &str,
+    session_id: &str,
+) -> Result<bool> {
+    let r = sqlx::query(
+        "DELETE FROM working_memory WHERE agent_id = $1 AND session_id = $2",
+    )
+    .bind(agent_id)
+    .bind(session_id)
+    .execute(&state.db)
+    .await?;
+    Ok(r.rows_affected() > 0)
 }
 
 // ── Entities ──────────────────────────────────────────────────────────────────
