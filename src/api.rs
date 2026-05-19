@@ -3,6 +3,7 @@ use axum::{
     http::StatusCode,
     response::Json,
 };
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -771,4 +772,58 @@ pub async fn resolve_conflict(
             format!("conflict {} not found or already resolved", conflict_id),
         ))
     }
+}
+
+// ── Bulk operation types & handler ────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct BulkOperationRequest {
+    /// "archive" (tombstone) or "delete" (hard-delete)
+    pub action: String,
+    pub filter: BulkFilter,
+}
+
+#[derive(Deserialize, Default)]
+pub struct BulkFilter {
+    pub session_id: Option<String>,
+    pub memory_type: Option<String>,
+    /// ISO 8601 timestamp — memories created before this are included.
+    pub older_than: Option<String>,
+    pub importance_below: Option<f32>,
+}
+
+/// POST /api/v1/agents/:id/memories/bulk
+pub async fn bulk_operation(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<BulkOperationRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if body.action != "archive" && body.action != "delete" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "action must be \"archive\" or \"delete\"".to_string(),
+        ));
+    }
+
+    let older_than: Option<DateTime<Utc>> = body
+        .filter
+        .older_than
+        .as_deref()
+        .map(|s| s.parse::<DateTime<Utc>>())
+        .transpose()
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid older_than: {}", e)))?;
+
+    let affected = store::bulk_operation_memories(
+        &state,
+        &agent_id,
+        &body.action,
+        body.filter.session_id.as_deref(),
+        body.filter.memory_type.as_deref(),
+        older_than,
+        body.filter.importance_below,
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(serde_json::json!({ "affected": affected })))
 }

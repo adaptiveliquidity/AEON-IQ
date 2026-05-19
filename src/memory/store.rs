@@ -796,6 +796,49 @@ pub async fn restore_archival_batch(
     }))
 }
 
+// ── Bulk operations ───────────────────────────────────────────────────────────
+
+/// Archive or delete memories matching an optional set of filters.
+/// Returns the number of rows affected.
+///
+/// `action` must be either `"archive"` (tombstone) or `"delete"` (hard-delete).
+pub async fn bulk_operation_memories(
+    state: &AppState,
+    agent_id: &str,
+    action: &str,
+    session_id: Option<&str>,
+    memory_type: Option<&str>,
+    older_than: Option<chrono::DateTime<chrono::Utc>>,
+    importance_below: Option<f32>,
+) -> Result<u64> {
+    let mut qb: QueryBuilder<sqlx::Postgres> = if action == "archive" {
+        QueryBuilder::new("UPDATE memories SET archived_at = NOW() WHERE archived_at IS NULL AND agent_id = ")
+    } else {
+        QueryBuilder::new("DELETE FROM memories WHERE archived_at IS NULL AND agent_id = ")
+    };
+    qb.push_bind(agent_id);
+
+    if let Some(sid) = session_id {
+        qb.push(" AND session_id = ");
+        qb.push_bind(sid);
+    }
+    if let Some(mt) = memory_type {
+        qb.push(" AND memory_type = ");
+        qb.push_bind(mt);
+    }
+    if let Some(dt) = older_than {
+        qb.push(" AND created_at < ");
+        qb.push_bind(dt);
+    }
+    if let Some(imp) = importance_below {
+        qb.push(" AND importance_score < ");
+        qb.push_bind(imp);
+    }
+
+    let r = qb.build().execute(&state.db).await?;
+    Ok(r.rows_affected())
+}
+
 // ── Conflict store ────────────────────────────────────────────────────────────
 
 pub async fn store_conflict(
