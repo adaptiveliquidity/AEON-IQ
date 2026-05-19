@@ -45,6 +45,8 @@ services:
       IMPORTANCE_BOOST_FACTOR:    ${IMPORTANCE_BOOST_FACTOR:-0.0}
       IMPORTANCE_REFRESH_BOOST:   ${IMPORTANCE_REFRESH_BOOST:-0.05}
       EMBEDDING_BASE_URL:         ${EMBEDDING_BASE_URL:-https://api.openai.com}
+      DEDUP_THRESHOLD:            ${DEDUP_THRESHOLD:-0.05}
+      CONFLICT_DETECTION_ENABLED: ${CONFLICT_DETECTION_ENABLED:-false}
       RUST_LOG:                   memoryos_kernel=info,tower_http=info
       PORT:                       8080
     depends_on:

@@ -63,6 +63,14 @@ pub struct Config {
     pub rate_limit_rpm: u32,
     /// Token bucket burst size (max instantaneous quota).
     pub rate_limit_burst: u32,
+
+    // ── Data integrity ────────────────────────────────────────────────────────
+    /// Cosine distance below which a new L2 memory is considered a near-duplicate
+    /// of an existing one and skipped. 0.0 = disabled.
+    pub dedup_threshold: f64,
+    /// When true, an async LLM call is made after each L2 insert to detect
+    /// contradictions against the top-k most similar existing memories.
+    pub conflict_detection_enabled: bool,
 }
 
 impl Config {
@@ -151,6 +159,14 @@ impl Config {
                 .unwrap_or_else(|_| "20".to_string())
                 .parse()
                 .context("RATE_LIMIT_BURST must be a non-negative integer")?,
+
+            dedup_threshold: std::env::var("DEDUP_THRESHOLD")
+                .unwrap_or_else(|_| "0.05".to_string())
+                .parse()
+                .context("DEDUP_THRESHOLD must be a float")?,
+            conflict_detection_enabled: std::env::var("CONFLICT_DETECTION_ENABLED")
+                .unwrap_or_else(|_| "false".to_string())
+                .eq_ignore_ascii_case("true"),
         })
     }
 }

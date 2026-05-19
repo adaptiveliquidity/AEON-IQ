@@ -46,6 +46,9 @@ pub struct Metrics {
 
     /// Facts with importance_score >= 0.9 stored.
     pub high_importance_total: Counter,
+
+    /// Near-duplicate memories skipped on insert (dedup check).
+    pub dedup_skipped_total: Counter,
 }
 
 impl Metrics {
@@ -148,6 +151,11 @@ impl Metrics {
             "Facts with importance_score >= 0.9 stored",
         ))?);
 
+        let dedup_skipped_total = reg!(Counter::with_opts(Opts::new(
+            "memoryos_dedup_skipped_total",
+            "Near-duplicate L2 memories skipped on insert",
+        ))?);
+
         Ok(Self {
             registry: Arc::new(reg),
             requests_total,
@@ -162,6 +170,7 @@ impl Metrics {
             rate_limited_total,
             extraction_importance,
             high_importance_total,
+            dedup_skipped_total,
         })
     }
 

@@ -80,6 +80,53 @@ pub async fn store_memory(
     importance_score: f32,
     importance_source: &str,
 ) -> Result<Uuid> {
+    // ── Dedup check ───────────────────────────────────────────────────────────
+    // Bind the vector once in a CTE to avoid double-scan.  If the nearest
+    // existing live memory is closer than the threshold, skip the insert and
+    // return the existing ID (bumping its confidence if the new value is higher).
+    if state.config.dedup_threshold > 0.0 {
+        let vec = Vector::from(embedding.clone());
+        let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
+            "WITH q AS (SELECT ",
+        );
+        qb.push_bind(vec);
+        qb.push(
+            " AS vec) \
+             SELECT id, (embedding <=> vec)::double precision AS distance \
+             FROM memories CROSS JOIN q \
+             WHERE agent_id = ",
+        );
+        qb.push_bind(agent_id);
+        qb.push(" AND archived_at IS NULL ORDER BY embedding <=> vec LIMIT 1");
+
+        if let Some((existing_id, distance)) = qb
+            .build_query_as::<(Uuid, f64)>()
+            .fetch_optional(&state.db)
+            .await?
+        {
+            if distance < state.config.dedup_threshold {
+                tracing::debug!(
+                    agent_id, %existing_id, distance,
+                    "dedup: skipping near-duplicate memory"
+                );
+                state.metrics.dedup_skipped_total.inc();
+                // Raise confidence if the repeated fact is stated with higher certainty.
+                sqlx::query(
+                    "UPDATE memories \
+                     SET access_count = access_count + 1, \
+                         last_accessed_at = NOW(), \
+                         confidence = GREATEST(confidence, $2) \
+                     WHERE id = $1",
+                )
+                .bind(existing_id)
+                .bind(confidence)
+                .execute(&state.db)
+                .await?;
+                return Ok(existing_id);
+            }
+        }
+    }
+
     store_memory_with_tier(
         state,
         agent_id,
@@ -805,6 +852,8 @@ mod tests {
                 upstream_provider: "openai".into(),
                 rate_limit_rpm: 0,
                 rate_limit_burst: 20,
+                dedup_threshold: 0.0,
+                conflict_detection_enabled: false,
             }),
             db: pool,
             http_client: reqwest::Client::new(),

@@ -141,6 +141,8 @@ Migrations run automatically at startup via `sqlx::migrate!("./migrations")`. Th
 | `DB_MAX_CONNECTIONS` | `20` | PgPool max connections |
 | `DB_ACQUIRE_TIMEOUT_SECS` | `5` | Seconds to wait for a pool connection before error |
 | `DB_IDLE_TIMEOUT_SECS` | `300` | Seconds before idle connections are reclaimed |
+| `DEDUP_THRESHOLD` | `0.05` | Cosine distance below which an insert is skipped as a near-duplicate; 0 = disabled |
+| `CONFLICT_DETECTION_ENABLED` | `false` | Enable async LLM-based contradiction detection on each L2 insert |
 
 To switch embedding model to bge-small (384 dims): change `EMBEDDING_MODEL`, `EMBEDDING_DIMENSION=384`, and update `vector(1536)` → `vector(384)` in `migrations/0001_initial.sql`.
 
