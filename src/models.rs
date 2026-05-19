@@ -82,6 +82,7 @@ pub struct ChatRequest {
 // ── DB row types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, sqlx::FromRow)]
+#[allow(dead_code)]
 pub struct Memory {
     pub id: Uuid,
     pub agent_id: String,
@@ -98,6 +99,7 @@ pub struct Memory {
 
 /// A tombstoned memory row — same as `Memory` plus the `archived_at` timestamp.
 #[derive(Debug, Clone, sqlx::FromRow)]
+#[allow(dead_code)]
 pub struct ArchivedMemory {
     pub id: Uuid,
     pub agent_id: String,
@@ -142,6 +144,7 @@ pub struct MemorySearchRow {
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
+#[allow(dead_code)]
 pub struct WorkingMemory {
     pub id: Uuid,
     pub agent_id: String,
