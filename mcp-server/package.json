@@ -1,0 +1,27 @@
+{
+  "name": "@aeon-iq/mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for AEON-IQ MemoryOS — exposes persistent agent memory to Claude Desktop and any MCP-compatible tool",
+  "main": "dist/index.js",
+  "bin": {
+    "aeon-iq-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "keywords": ["mcp", "memory", "agent", "aeon-iq", "memoryos"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
