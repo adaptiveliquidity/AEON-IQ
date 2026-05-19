@@ -91,6 +91,7 @@ pub struct Memory {
     pub confidence: f32,
     pub provenance: String,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
     pub source_turn: Option<i32>,
     pub importance_score: f32,
     pub importance_source: String,

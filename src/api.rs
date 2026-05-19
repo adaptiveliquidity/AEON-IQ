@@ -35,6 +35,7 @@ pub struct MemoryDto {
     pub confidence: f32,
     pub provenance: String,
     pub created_at: String,
+    pub updated_at: String,
     pub session_id: Option<String>,
     pub source_turn: Option<i32>,
     pub importance_score: f32,
@@ -50,6 +51,7 @@ impl From<Memory> for MemoryDto {
             confidence: m.confidence,
             provenance: m.provenance,
             created_at: m.created_at.to_rfc3339(),
+            updated_at: m.updated_at.to_rfc3339(),
             session_id: m.session_id,
             source_turn: m.source_turn,
             importance_score: m.importance_score,
@@ -62,6 +64,8 @@ impl From<Memory> for MemoryDto {
 pub struct MemoryListResponse {
     pub memories: Vec<MemoryDto>,
     pub total: i64,
+    pub offset: i64,
+    pub limit: i64,
 }
 
 #[derive(Serialize)]
@@ -153,6 +157,11 @@ pub struct Pagination {
 pub struct CreateMemoryBody {
     pub content: String,
     pub memory_type: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct PatchMemoryBody {
+    pub content: String,
 }
 
 // ── Semantic search types ─────────────────────────────────────────────────────
@@ -269,6 +278,8 @@ pub async fn list_memories(
 
     Ok(Json(MemoryListResponse {
         total: total.0,
+        offset,
+        limit,
         memories: memories.into_iter().map(MemoryDto::from).collect(),
     }))
 }
@@ -303,6 +314,28 @@ pub async fn create_memory(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(serde_json::json!({ "id": id.to_string(), "success": true })))
+}
+
+pub async fn patch_memory(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PatchMemoryBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let embedding = embed_text(&state, &body.content)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Embedding: {}", e)))?;
+
+    let updated = store::update_memory_content(&state, uuid, &body.content, embedding)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if updated {
+        Ok(Json(serde_json::json!({ "updated": true })))
+    } else {
+        Err((StatusCode::NOT_FOUND, format!("memory {} not found or archived", id)))
+    }
 }
 
 pub async fn delete_memory(

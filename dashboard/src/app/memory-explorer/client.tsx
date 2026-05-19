@@ -12,6 +12,9 @@ import {
   Lock,
   Archive,
   RotateCcw,
+  Pencil,
+  Check,
+  X,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -235,6 +238,10 @@ export default function MemoryExplorerClient({
     }
   };
 
+  // Edit state
+  const [editingId, setEditingId]     = useState<string | null>(null);
+  const [editContent, setEditContent] = useState("");
+
   // ── CRUD ──────────────────────────────────────────────────────────────────
 
   const handleDelete = async (id: string) => {
@@ -242,6 +249,32 @@ export default function MemoryExplorerClient({
     await fetch(`/api/memories/${id}`, { method: "DELETE" });
     loadBrowse();
   };
+
+  const handleEditStart = (id: string, content: string) => {
+    setEditingId(id);
+    setEditContent(content);
+  };
+
+  const handleEditSave = async (id: string) => {
+    if (!editContent.trim()) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/memories/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: editContent }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setEditingId(null);
+      loadBrowse();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEditCancel = () => setEditingId(null);
 
   const handleRestore = async (id: string) => {
     await fetch(`/api/memories/${id}/restore`, { method: "POST" });
@@ -422,6 +455,12 @@ export default function MemoryExplorerClient({
             loaded={filteredBrowse.length}
             agentId={agentId}
             loading={loading}
+            editingId={editingId}
+            editContent={editContent}
+            onEditStart={handleEditStart}
+            onEditChange={setEditContent}
+            onEditSave={handleEditSave}
+            onEditCancel={handleEditCancel}
             onDelete={handleDelete}
           />
         </div>
@@ -745,6 +784,12 @@ function MemoryTable({
   loaded,
   agentId,
   loading,
+  editingId,
+  editContent,
+  onEditStart,
+  onEditChange,
+  onEditSave,
+  onEditCancel,
   onDelete,
 }: {
   memories: MemoryDto[];
@@ -752,6 +797,12 @@ function MemoryTable({
   loaded: number;
   agentId: string;
   loading: boolean;
+  editingId: string | null;
+  editContent: string;
+  onEditStart: (id: string, content: string) => void;
+  onEditChange: (v: string) => void;
+  onEditSave: (id: string) => void;
+  onEditCancel: () => void;
   onDelete: (id: string) => void;
 }) {
   if (!agentId) {
@@ -791,45 +842,83 @@ function MemoryTable({
             key={m.id}
             className="px-5 py-4 hover:bg-zinc-800/40 transition-colors group"
           >
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-zinc-200 leading-relaxed">{m.content}</p>
-                <div className="flex flex-wrap items-center gap-2 mt-2">
-                  <span
-                    className={`text-xs px-2 py-0.5 rounded-full border ${
-                      TYPE_COLORS[m.memory_type] ?? "bg-zinc-700 text-zinc-300 border-zinc-600"
-                    }`}
+            {editingId === m.id ? (
+              /* ── Inline edit form ─────────────────────────────────── */
+              <div className="space-y-2">
+                <textarea
+                  value={editContent}
+                  onChange={(e) => onEditChange(e.target.value)}
+                  rows={3}
+                  autoFocus
+                  className="w-full bg-zinc-800 border border-green-600/50 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-green-500 resize-none"
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => onEditSave(m.id)}
+                    disabled={!editContent.trim()}
+                    className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg bg-green-600 hover:bg-green-500 disabled:opacity-40 font-medium"
                   >
-                    {m.memory_type}
-                  </span>
-                  <span className={`text-xs ${PROV_COLORS[m.provenance] ?? "text-zinc-500"}`}>
-                    {m.provenance}
-                  </span>
-                  <ImportanceBadge score={m.importance_score} source={m.importance_source} />
-                  <span className="text-xs text-zinc-500">
-                    conf: {(m.confidence * 100).toFixed(0)}%
-                  </span>
-                  {m.source_turn !== null && (
-                    <span className="text-xs text-zinc-500">turn {m.source_turn}</span>
-                  )}
-                  {m.session_id && (
-                    <span className="text-xs text-zinc-600 font-mono truncate max-w-[160px]">
-                      {m.session_id}
-                    </span>
-                  )}
-                  <span className="text-xs text-zinc-600">
-                    {new Date(m.created_at).toLocaleString()}
-                  </span>
+                    <Check className="w-3 h-3" /> Save
+                  </button>
+                  <button
+                    onClick={onEditCancel}
+                    className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg border border-zinc-700 hover:bg-zinc-800"
+                  >
+                    <X className="w-3 h-3" /> Cancel
+                  </button>
                 </div>
               </div>
-              <button
-                onClick={() => onDelete(m.id)}
-                className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-500/20 hover:text-red-400 text-zinc-600 transition-all shrink-0"
-                title="Delete memory"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
+            ) : (
+              /* ── Normal view ──────────────────────────────────────── */
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-zinc-200 leading-relaxed">{m.content}</p>
+                  <div className="flex flex-wrap items-center gap-2 mt-2">
+                    <span
+                      className={`text-xs px-2 py-0.5 rounded-full border ${
+                        TYPE_COLORS[m.memory_type] ?? "bg-zinc-700 text-zinc-300 border-zinc-600"
+                      }`}
+                    >
+                      {m.memory_type}
+                    </span>
+                    <span className={`text-xs ${PROV_COLORS[m.provenance] ?? "text-zinc-500"}`}>
+                      {m.provenance}
+                    </span>
+                    <ImportanceBadge score={m.importance_score} source={m.importance_source} />
+                    <span className="text-xs text-zinc-500">
+                      conf: {(m.confidence * 100).toFixed(0)}%
+                    </span>
+                    {m.source_turn !== null && (
+                      <span className="text-xs text-zinc-500">turn {m.source_turn}</span>
+                    )}
+                    {m.session_id && (
+                      <span className="text-xs text-zinc-600 font-mono truncate max-w-[160px]">
+                        {m.session_id}
+                      </span>
+                    )}
+                    <span className="text-xs text-zinc-600">
+                      {new Date(m.created_at).toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all shrink-0">
+                  <button
+                    onClick={() => onEditStart(m.id, m.content)}
+                    className="p-1.5 rounded-lg hover:bg-blue-500/20 hover:text-blue-400 text-zinc-600"
+                    title="Edit memory"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => onDelete(m.id)}
+                    className="p-1.5 rounded-lg hover:bg-red-500/20 hover:text-red-400 text-zinc-600"
+                    title="Delete memory"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         ))}
       </div>

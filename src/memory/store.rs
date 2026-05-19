@@ -219,7 +219,7 @@ pub async fn list_memories_for_agent(
     let rows = sqlx::query_as::<_, Memory>(
         r#"
         SELECT id, agent_id, session_id, content, memory_type, confidence, provenance,
-               created_at, source_turn, importance_score, importance_source
+               created_at, updated_at, source_turn, importance_score, importance_source
         FROM memories
         WHERE agent_id = $1
           AND archived_at IS NULL
@@ -278,6 +278,27 @@ pub async fn delete_memory(state: &AppState, id: Uuid) -> Result<bool> {
         .bind(id)
         .execute(&state.db)
         .await?;
+    Ok(r.rows_affected() > 0)
+}
+
+/// Update a memory's content and re-embed it.  Returns false if the memory
+/// does not exist or is tombstoned.
+pub async fn update_memory_content(
+    state: &AppState,
+    id: Uuid,
+    content: &str,
+    embedding: Vec<f32>,
+) -> Result<bool> {
+    let vec = Vector::from(embedding);
+    let r = sqlx::query(
+        "UPDATE memories SET content = $1, embedding = $2, updated_at = NOW()
+         WHERE id = $3 AND archived_at IS NULL",
+    )
+    .bind(content)
+    .bind(vec)
+    .bind(id)
+    .execute(&state.db)
+    .await?;
     Ok(r.rows_affected() > 0)
 }
 

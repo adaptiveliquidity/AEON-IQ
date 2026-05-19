@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use axum::{
     middleware,
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Router,
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -108,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/agents/:agent_id/memories/archived",           get(api::list_archived_memories))
         .route("/agents/:agent_id/archival/batches",            get(api::list_archival_batches))
         .route("/memories/search",                              post(api::search_memories_semantic))
+        .route("/memories/:id",                                 patch(api::patch_memory))
         .route("/memories/:id",                                 delete(api::delete_memory))
         .route("/memories/:id/restore",                         post(api::restore_memory))
         .route("/archival/batches/:batch_id/restore",           post(api::restore_archival_batch))
