@@ -198,8 +198,15 @@ async fn archive_agent(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+fn strip_code_fences(s: &str) -> &str {
+    // Some models wrap JSON in ```json ... ``` even with response_format set.
+    let s = s.trim();
+    let s = s.strip_prefix("```json").or_else(|| s.strip_prefix("```")).unwrap_or(s);
+    s.trim_end_matches("```").trim()
+}
+
 fn parse_compressed_facts(raw: &str) -> Vec<String> {
-    // Try {"facts": [...]} first, then a bare array.
+    let raw = strip_code_fences(raw);
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
         let arr = v["facts"].as_array().or_else(|| v.as_array());
         if let Some(arr) = arr {
@@ -209,6 +216,46 @@ fn parse_compressed_facts(raw: &str) -> Vec<String> {
                 .collect();
         }
     }
-    // Last resort: try as bare JSON array of strings.
-    serde_json::from_str::<Vec<String>>(raw).unwrap_or_default()
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_facts_from_object_key() {
+        let raw = r#"{"facts": ["Alex is building NovaPay", "NovaPay does cross-border payments"]}"#;
+        let facts = parse_compressed_facts(raw);
+        assert_eq!(facts.len(), 2);
+        assert_eq!(facts[0], "Alex is building NovaPay");
+    }
+
+    #[test]
+    fn parse_facts_from_bare_array() {
+        let raw = r#"["Fact one", "Fact two", "Fact three"]"#;
+        let facts = parse_compressed_facts(raw);
+        assert_eq!(facts.len(), 3);
+    }
+
+    #[test]
+    fn parse_facts_strips_markdown_fences() {
+        let raw = "```json\n{\"facts\": [\"Stripped fact\"]}\n```";
+        let facts = parse_compressed_facts(raw);
+        assert_eq!(facts, vec!["Stripped fact"]);
+    }
+
+    #[test]
+    fn parse_facts_strips_plain_fences() {
+        let raw = "```\n[\"Bare array fact\"]\n```";
+        let facts = parse_compressed_facts(raw);
+        assert_eq!(facts, vec!["Bare array fact"]);
+    }
+
+    #[test]
+    fn parse_facts_returns_empty_on_garbage() {
+        assert!(parse_compressed_facts("not json at all").is_empty());
+        assert!(parse_compressed_facts("").is_empty());
+        assert!(parse_compressed_facts("{}").is_empty());
+    }
 }

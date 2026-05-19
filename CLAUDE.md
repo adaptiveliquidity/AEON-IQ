@@ -63,7 +63,7 @@ Every `POST /v1/chat/completions` goes through `src/proxy.rs`:
 
 Archival job (`src/archival.rs`) runs on `ARCHIVAL_INTERVAL_HOURS` schedule: compacts stale zero-access L2 facts into L3 via LLM compression, then tombstones (sets `archived_at = NOW()`) originals. All queries filter `AND archived_at IS NULL` — nothing is hard-deleted.
 
-Each compaction run creates an **archival batch** (`archival_batches` table) that links the tombstoned L2 sources and the new L3 facts via `memories.archival_batch_id`. This enables atomic batch-level restore: `POST /api/v1/archival/batches/:batch_id/restore` un-tombstones L2 memories and re-tombstones the L3 facts that replaced them, then sets `batch.status = 'restored'`. A restored batch cannot be restored again (idempotency guard).
+Each compaction run creates an **archival batch** (`archival_batches` table) that links the tombstoned L2 sources and the new L3 facts via `memories.archival_batch_id`. This enables atomic batch-level restore: `POST /api/v1/archival/batches/:batch_id/restore` un-tombstones L2 memories and re-tombstones the L3 facts that replaced them, then sets `batch.status = 'restored'`. A restored batch cannot be restored again (idempotency guard). If the embedding step fails after the batch record is created, the batch is marked `status = 'failed'` (migration 0007).
 
 ### Decay-weighted retrieval
 
@@ -138,6 +138,9 @@ Migrations run automatically at startup via `sqlx::migrate!("./migrations")`. Th
 | `RATE_LIMIT_RPM` | `0` | Per-agent request cap; 0 = disabled |
 | `MANAGEMENT_API_KEY` | unset | Unauthenticated if unset |
 | `EMBEDDING_DIMENSION` | `1536` | Must match `vector(N)` in schema |
+| `DB_MAX_CONNECTIONS` | `20` | PgPool max connections |
+| `DB_ACQUIRE_TIMEOUT_SECS` | `5` | Seconds to wait for a pool connection before error |
+| `DB_IDLE_TIMEOUT_SECS` | `300` | Seconds before idle connections are reclaimed |
 
 To switch embedding model to bge-small (384 dims): change `EMBEDDING_MODEL`, `EMBEDDING_DIMENSION=384`, and update `vector(1536)` → `vector(384)` in `migrations/0001_initial.sql`.
 
