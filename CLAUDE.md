@@ -183,6 +183,8 @@ AppState {
 | POST | `/api/v1/agents/:id/memories/bulk` | Bulk archive or delete memories by filter |
 | GET | `/api/v1/agents/:id/conflicts` | List unresolved (or all) memory conflicts |
 | POST | `/api/v1/conflicts/:id/resolve` | Resolve a conflict (keep_a/keep_b/keep_both/dismissed) |
+| GET | `/api/v1/agents/:id/export` | Export all live memories as NDJSON (no embeddings) |
+| POST | `/api/v1/agents/:id/import` | Import NDJSON; re-embeds each memory, runs dedup check |
 | GET | `/api/v1/stats` | Agent + memory counts |
 
 ### Observability

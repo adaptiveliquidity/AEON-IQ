@@ -97,6 +97,22 @@ pub struct Memory {
     pub importance_source: String,
 }
 
+/// A memory row for export — includes `tier` (omitted from `Memory` for live queries).
+/// The embedding vector is intentionally excluded: it must be re-computed on import.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct MemoryExportRow {
+    pub id: Uuid,
+    pub session_id: Option<String>,
+    pub content: String,
+    pub memory_type: String,
+    pub confidence: f32,
+    pub provenance: String,
+    pub tier: String,
+    pub importance_score: f32,
+    pub importance_source: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// A tombstoned memory row — same as `Memory` plus the `archived_at` timestamp.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ArchivedMemory {

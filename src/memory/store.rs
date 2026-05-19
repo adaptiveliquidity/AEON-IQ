@@ -796,6 +796,27 @@ pub async fn restore_archival_batch(
     }))
 }
 
+// ── Export ────────────────────────────────────────────────────────────────────
+
+/// Fetch all live (non-tombstoned) memories for an agent suitable for NDJSON export.
+/// Embeddings are excluded — they must be re-computed on import.
+pub async fn export_memories_for_agent(
+    state: &AppState,
+    agent_id: &str,
+) -> Result<Vec<crate::models::MemoryExportRow>> {
+    let rows = sqlx::query_as(
+        "SELECT id, session_id, content, memory_type, confidence, provenance, \
+                tier, importance_score, importance_source, created_at \
+         FROM memories \
+         WHERE agent_id = $1 AND archived_at IS NULL \
+         ORDER BY created_at ASC",
+    )
+    .bind(agent_id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(rows)
+}
+
 // ── Bulk operations ───────────────────────────────────────────────────────────
 
 /// Archive or delete memories matching an optional set of filters.

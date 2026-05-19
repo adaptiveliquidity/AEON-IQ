@@ -1,7 +1,8 @@
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
-    http::StatusCode,
-    response::Json,
+    http::{header, StatusCode},
+    response::{Json, Response},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -9,9 +10,9 @@ use uuid::Uuid;
 
 use crate::{
     archival,
-    embeddings::embed_text,
+    embeddings::{embed_text, embed_texts},
     memory::store,
-    models::{ArchivalBatch, ArchivedMemory, Memory, MemoryConflict, RelationRow, SessionInfo, WorkingMemory},
+    models::{ArchivalBatch, ArchivedMemory, Memory, MemoryConflict, MemoryExportRow, RelationRow, SessionInfo, WorkingMemory},
     AppState,
 };
 
@@ -826,4 +827,147 @@ pub async fn bulk_operation(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(serde_json::json!({ "affected": affected })))
+}
+
+// ── Export / Import handlers ──────────────────────────────────────────────────
+
+/// GET /api/v1/agents/:id/export
+///
+/// Returns all live memories as NDJSON (one JSON object per line).
+/// Embeddings are excluded; re-compute them on import.
+pub async fn export_memories(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Response<Body>, (StatusCode, String)> {
+    let rows: Vec<MemoryExportRow> = store::export_memories_for_agent(&state, &agent_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let mut lines = String::new();
+    for row in rows {
+        match serde_json::to_string(&row) {
+            Ok(line) => {
+                lines.push_str(&line);
+                lines.push('\n');
+            }
+            Err(e) => {
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+            }
+        }
+    }
+
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/x-ndjson")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}.ndjson\"", agent_id),
+        )
+        .body(Body::from(lines))
+        .expect("static headers; infallible");
+
+    Ok(response)
+}
+
+/// POST /api/v1/agents/:id/import
+///
+/// Accepts an NDJSON body (one memory JSON per line, same shape as export).
+/// Each line is embedded and stored; dedup check runs per the configured threshold.
+/// Returns {"imported": N, "skipped_dedup": N, "errors": N}.
+pub async fn import_memories(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    body: String,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Ensure the agent row exists before importing.
+    store::upsert_agent(&state, &agent_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let lines: Vec<&str> = body
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    if lines.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "imported": 0, "skipped_dedup": 0, "errors": 0
+        })));
+    }
+
+    // Parse all lines first so we can batch-embed contents.
+    let mut parsed: Vec<serde_json::Value> = Vec::with_capacity(lines.len());
+    let mut errors: u64 = 0;
+    for line in &lines {
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(v) => parsed.push(v),
+            Err(_) => errors += 1,
+        }
+    }
+
+    // Batch-embed all contents in one API call.
+    let contents: Vec<&str> = parsed
+        .iter()
+        .filter_map(|v| v["content"].as_str())
+        .collect();
+
+    let embeddings = embed_texts(&state, &contents)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let mut imported: u64 = 0;
+    let mut skipped_dedup: u64 = 0;
+
+    let mut emb_iter = embeddings.into_iter();
+    for row in &parsed {
+        let content = match row["content"].as_str() {
+            Some(c) => c,
+            None => { errors += 1; continue; }
+        };
+        let embedding = match emb_iter.next() {
+            Some(e) => e,
+            None => { errors += 1; break; }
+        };
+
+        let memory_type = row["memory_type"].as_str().unwrap_or("semantic");
+        let confidence  = row["confidence"].as_f64().unwrap_or(0.8) as f32;
+        let provenance  = row["provenance"].as_str().unwrap_or("user_stated");
+        let importance_score  = row["importance_score"].as_f64().unwrap_or(0.5) as f32;
+        let importance_source = row["importance_source"].as_str().unwrap_or("extractor");
+
+        // Track dedup by sampling the counter before and after each insert.
+        // Import is a sequential operation so per-call deltas are meaningful.
+        let dedup_before = state.metrics.dedup_skipped_total.get();
+        match store::store_memory(
+            &state,
+            &agent_id,
+            None,
+            content,
+            memory_type,
+            confidence,
+            embedding,
+            None,
+            provenance,
+            importance_score,
+            importance_source,
+        )
+        .await
+        {
+            Ok(_) => {
+                if state.metrics.dedup_skipped_total.get() > dedup_before {
+                    skipped_dedup += 1;
+                } else {
+                    imported += 1;
+                }
+            }
+            Err(_) => errors += 1,
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "imported": imported,
+        "skipped_dedup": skipped_dedup,
+        "errors": errors,
+    })))
 }
