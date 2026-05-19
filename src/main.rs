@@ -66,7 +66,13 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let db = db::connect(&config.database_url).await?;
+    let db = db::connect(
+        &config.database_url,
+        config.db_max_connections,
+        config.db_acquire_timeout_secs,
+        config.db_idle_timeout_secs,
+    )
+    .await?;
     db::run_migrations(&db).await?;
     tracing::info!("Database migrations applied");
 

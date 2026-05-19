@@ -7,6 +7,11 @@ pub struct Config {
     pub upstream_base_url: String,
     pub port: u16,
 
+    // ── Database pool ─────────────────────────────────────────────────────────
+    pub db_max_connections: u32,
+    pub db_acquire_timeout_secs: u64,
+    pub db_idle_timeout_secs: u64,
+
     // ── Embeddings ────────────────────────────────────────────────────────────
     /// Server-side key for embedding and extraction calls.
     pub openai_api_key: Option<String>,
@@ -71,6 +76,19 @@ impl Config {
                 .unwrap_or_else(|_| "8080".to_string())
                 .parse()
                 .context("PORT must be a valid number")?,
+
+            db_max_connections: std::env::var("DB_MAX_CONNECTIONS")
+                .unwrap_or_else(|_| "20".to_string())
+                .parse()
+                .context("DB_MAX_CONNECTIONS must be a positive integer")?,
+            db_acquire_timeout_secs: std::env::var("DB_ACQUIRE_TIMEOUT_SECS")
+                .unwrap_or_else(|_| "5".to_string())
+                .parse()
+                .context("DB_ACQUIRE_TIMEOUT_SECS must be a positive integer")?,
+            db_idle_timeout_secs: std::env::var("DB_IDLE_TIMEOUT_SECS")
+                .unwrap_or_else(|_| "300".to_string())
+                .parse()
+                .context("DB_IDLE_TIMEOUT_SECS must be a positive integer")?,
 
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             embedding_model: std::env::var("EMBEDDING_MODEL")
