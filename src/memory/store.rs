@@ -335,7 +335,11 @@ pub async fn upsert_working_memory(
 // ── Entities ──────────────────────────────────────────────────────────────────
 
 /// Upsert an entity, returning its UUID.
-/// Entity disambiguation is handled in Phase 4.2 (see below).
+///
+/// Disambiguation (4.2): before inserting, check whether any existing entity
+/// for this agent has a name within Levenshtein distance ≤ 2.  If so, merge
+/// into the existing entity by using its canonical name — preventing "Alex"
+/// and "Alexander" from being stored as two separate nodes.
 pub async fn upsert_entity(
     state: &AppState,
     agent_id: &str,
@@ -343,23 +347,47 @@ pub async fn upsert_entity(
     entity_type: &str,
     confidence: f64,
 ) -> Result<Uuid> {
-    let row: (Uuid,) = sqlx::query_as(
-        r#"
-        INSERT INTO entities (agent_id, name, entity_type, confidence)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (agent_id, name) DO UPDATE
-            SET entity_type = EXCLUDED.entity_type,
-                confidence  = EXCLUDED.confidence,
-                updated_at  = NOW()
-        RETURNING id
-        "#,
+    // Check for a near-duplicate entity name (case-insensitive Levenshtein).
+    let similar: Option<(Uuid, String)> = sqlx::query_as(
+        r#"SELECT id, name FROM entities
+           WHERE agent_id = $1
+             AND name != $2
+             AND levenshtein(LOWER(name), LOWER($2)) <= 2
+           ORDER BY levenshtein(LOWER(name), LOWER($2)) ASC
+           LIMIT 1"#,
     )
     .bind(agent_id)
     .bind(name)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let canonical = if let Some((_, existing_name)) = similar {
+        tracing::info!(
+            agent_id = %agent_id,
+            "Entity disambiguation: '{}' merged into '{}'",
+            name, existing_name
+        );
+        existing_name
+    } else {
+        name.to_string()
+    };
+
+    let row: (Uuid,) = sqlx::query_as(
+        r#"INSERT INTO entities (agent_id, name, entity_type, confidence)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (agent_id, name) DO UPDATE
+               SET entity_type = EXCLUDED.entity_type,
+                   confidence  = EXCLUDED.confidence,
+                   updated_at  = NOW()
+           RETURNING id"#,
+    )
+    .bind(agent_id)
+    .bind(&canonical)
     .bind(entity_type)
     .bind(confidence as f32)
     .fetch_one(&state.db)
     .await?;
+
     Ok(row.0)
 }
 
