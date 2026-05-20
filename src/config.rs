@@ -58,6 +58,11 @@ pub struct Config {
     pub rate_limit_rpm: u32,
     /// Token bucket burst size (max instantaneous quota).
     pub rate_limit_burst: u32,
+
+    // ── Graph retrieval ───────────────────────────────────────────────────────
+    /// When true, retrieval augments vector search with a graph walk over
+    /// `memory_entity_links` and `memory_graph`. Default: false.
+    pub graph_retrieval_enabled: bool,
 }
 
 impl Config {
@@ -133,6 +138,11 @@ impl Config {
                 .unwrap_or_else(|_| "20".to_string())
                 .parse()
                 .context("RATE_LIMIT_BURST must be a non-negative integer")?,
+
+            graph_retrieval_enabled: std::env::var("GRAPH_RETRIEVAL_ENABLED")
+                .unwrap_or_else(|_| "false".to_string())
+                .parse()
+                .unwrap_or(false),
         })
     }
 }

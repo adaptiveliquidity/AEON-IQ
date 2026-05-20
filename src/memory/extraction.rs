@@ -174,6 +174,7 @@ async fn run_extraction(
     //
     // Issue 4 fix: assistant_derived and inferred facts are stored with
     // a lower confidence cap so they don't dominate future retrievals.
+    let mut memory_ids: Vec<uuid::Uuid> = Vec::new();
     if !extraction.facts.is_empty() {
         let texts: Vec<&str> = extraction.facts.iter().map(|f| f.content.as_str()).collect();
         let has_agent_tag = assistant_content.contains("<important>");
@@ -199,7 +200,7 @@ async fn run_extraction(
                         state.metrics.high_importance_total.inc();
                     }
 
-                    if let Err(e) = store::store_memory(
+                    match store::store_memory(
                         state,
                         agent_id,
                         Some(session_id),
@@ -214,7 +215,8 @@ async fn run_extraction(
                     )
                     .await
                     {
-                        warn!(agent_id = %agent_id, "Failed to store fact: {}", e);
+                        Ok(id) => memory_ids.push(id),
+                        Err(e) => warn!(agent_id = %agent_id, "Failed to store fact: {}", e),
                     }
                 }
             }
@@ -222,13 +224,25 @@ async fn run_extraction(
         }
     }
 
+    // ── Upsert entities and build entity-memory links ─────────────────────────
+    let mut entity_ids: Vec<uuid::Uuid> = Vec::new();
     for entity in &extraction.entities {
-        if let Err(e) = store::upsert_entity(
+        match store::upsert_entity(
             state, agent_id, &entity.name, &entity.entity_type, entity.confidence,
         )
         .await
         {
-            warn!(agent_id = %agent_id, "Failed to store entity: {}", e);
+            Ok(id) => entity_ids.push(id),
+            Err(e) => warn!(agent_id = %agent_id, "Failed to store entity: {}", e),
+        }
+    }
+
+    // Link each memory stored in this turn to each entity extracted in this turn.
+    for &mid in &memory_ids {
+        for &eid in &entity_ids {
+            if let Err(e) = store::link_memory_entity(state, mid, eid, agent_id).await {
+                warn!(agent_id = %agent_id, "Failed to link memory to entity: {}", e);
+            }
         }
     }
 

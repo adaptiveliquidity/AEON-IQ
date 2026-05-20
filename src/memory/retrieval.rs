@@ -5,7 +5,13 @@ use super::store;
 
 /// Embed `query`, run a vector similarity search, and return memories whose
 /// cosine distance is below `threshold`.
-/// Also fires a background access-count bump for retrieved memories.
+///
+/// When `GRAPH_RETRIEVAL_ENABLED=true`, the result set is augmented by a
+/// one-hop graph walk: entity names found in the query are matched against
+/// `entities`, their relations in `memory_graph` are walked, and memories
+/// linked to those entities via `memory_entity_links` are merged in.
+///
+/// Also fires a background access-count bump for all retrieved memories.
 pub async fn retrieve_relevant(
     state: &AppState,
     agent_id: &str,
@@ -32,7 +38,7 @@ pub async fn retrieve_relevant(
         .vector_search_secs
         .observe(start.elapsed().as_secs_f64());
 
-    let memories: Vec<Memory> = rows
+    let mut memories: Vec<Memory> = rows
         .iter()
         .map(|r| Memory {
             id: r.id,
@@ -48,6 +54,43 @@ pub async fn retrieve_relevant(
             importance_source: r.importance_source.clone(),
         })
         .collect();
+
+    // ── Graph-walk augmentation ───────────────────────────────────────────────
+    if state.config.graph_retrieval_enabled {
+        let known = store::get_entity_names(state, agent_id)
+            .await
+            .unwrap_or_default();
+
+        let query_lower = query.to_lowercase();
+        let matched: Vec<String> = known
+            .into_iter()
+            .filter(|name| query_lower.contains(&name.to_lowercase()))
+            .collect();
+
+        if !matched.is_empty() {
+            let related = store::walk_graph_for_entities(state, agent_id, &matched)
+                .await
+                .unwrap_or_default();
+
+            let all_entities: Vec<String> = matched
+                .into_iter()
+                .chain(related.into_iter())
+                .collect();
+
+            let vector_ids: Vec<uuid::Uuid> = memories.iter().map(|m| m.id).collect();
+            let graph_mems = store::get_memories_for_entities(
+                state,
+                agent_id,
+                &all_entities,
+                &vector_ids,
+                limit,
+            )
+            .await
+            .unwrap_or_default();
+
+            memories.extend(graph_mems);
+        }
+    }
 
     // Bump access counts asynchronously so the hot path is never delayed.
     if !memories.is_empty() {
