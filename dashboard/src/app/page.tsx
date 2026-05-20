@@ -1,6 +1,7 @@
 import { Bot, Brain, Coins, Zap } from "lucide-react";
 import { auth } from "@/auth";
 import { backendUrl, mgmtHeaders } from "@/lib/backend";
+import { AgentsTable } from "./agents-table";
 
 interface Stats {
   agent_count: number;
@@ -157,24 +158,7 @@ export default async function OverviewPage() {
             )}
           </div>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-zinc-500 text-xs uppercase tracking-wide">
-                <th className="px-5 py-3 text-left">Agent ID</th>
-                <th className="px-5 py-3 text-right">Memories</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-800">
-              {visibleAgents.map((a) => (
-                <tr key={a.agent_id} className="hover:bg-zinc-800/50 transition-colors">
-                  <td className="px-5 py-3 font-mono text-zinc-300">{a.agent_id}</td>
-                  <td className="px-5 py-3 text-right text-green-400 font-semibold">
-                    {a.memory_count}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <AgentsTable agents={visibleAgents} isAdmin={isAdmin} />
         )}
       </div>
     </div>

@@ -7,6 +7,11 @@ pub struct Config {
     pub upstream_base_url: String,
     pub port: u16,
 
+    // ── Database pool ─────────────────────────────────────────────────────────
+    pub db_max_connections: u32,
+    pub db_acquire_timeout_secs: u64,
+    pub db_idle_timeout_secs: u64,
+
     // ── Embeddings ────────────────────────────────────────────────────────────
     /// Server-side key for embedding and extraction calls.
     pub openai_api_key: Option<String>,
@@ -63,6 +68,14 @@ pub struct Config {
     /// When true, retrieval augments vector search with a graph walk over
     /// `memory_entity_links` and `memory_graph`. Default: false.
     pub graph_retrieval_enabled: bool,
+
+    // ── Data integrity ────────────────────────────────────────────────────────
+    /// Cosine distance below which a new L2 memory is considered a near-duplicate
+    /// of an existing one and skipped. 0.0 = disabled.
+    pub dedup_threshold: f64,
+    /// When true, an async LLM call is made after each L2 insert to detect
+    /// contradictions against the top-k most similar existing memories.
+    pub conflict_detection_enabled: bool,
 }
 
 impl Config {
@@ -76,6 +89,19 @@ impl Config {
                 .unwrap_or_else(|_| "8080".to_string())
                 .parse()
                 .context("PORT must be a valid number")?,
+
+            db_max_connections: std::env::var("DB_MAX_CONNECTIONS")
+                .unwrap_or_else(|_| "20".to_string())
+                .parse()
+                .context("DB_MAX_CONNECTIONS must be a positive integer")?,
+            db_acquire_timeout_secs: std::env::var("DB_ACQUIRE_TIMEOUT_SECS")
+                .unwrap_or_else(|_| "5".to_string())
+                .parse()
+                .context("DB_ACQUIRE_TIMEOUT_SECS must be a positive integer")?,
+            db_idle_timeout_secs: std::env::var("DB_IDLE_TIMEOUT_SECS")
+                .unwrap_or_else(|_| "300".to_string())
+                .parse()
+                .context("DB_IDLE_TIMEOUT_SECS must be a positive integer")?,
 
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             embedding_model: std::env::var("EMBEDDING_MODEL")
@@ -143,6 +169,14 @@ impl Config {
                 .unwrap_or_else(|_| "false".to_string())
                 .parse()
                 .unwrap_or(false),
+
+            dedup_threshold: std::env::var("DEDUP_THRESHOLD")
+                .unwrap_or_else(|_| "0.05".to_string())
+                .parse()
+                .context("DEDUP_THRESHOLD must be a float")?,
+            conflict_detection_enabled: std::env::var("CONFLICT_DETECTION_ENABLED")
+                .unwrap_or_else(|_| "false".to_string())
+                .eq_ignore_ascii_case("true"),
         })
     }
 }

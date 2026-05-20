@@ -91,9 +91,26 @@ pub struct Memory {
     pub confidence: f32,
     pub provenance: String,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
     pub source_turn: Option<i32>,
     pub importance_score: f32,
     pub importance_source: String,
+}
+
+/// A memory row for export — includes `tier` (omitted from `Memory` for live queries).
+/// The embedding vector is intentionally excluded: it must be re-computed on import.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct MemoryExportRow {
+    pub id: Uuid,
+    pub session_id: Option<String>,
+    pub content: String,
+    pub memory_type: String,
+    pub confidence: f32,
+    pub provenance: String,
+    pub tier: String,
+    pub importance_score: f32,
+    pub importance_source: String,
+    pub created_at: DateTime<Utc>,
 }
 
 /// A tombstoned memory row — same as `Memory` plus the `archived_at` timestamp.
@@ -164,6 +181,29 @@ pub struct WorkingMemoryState {
     pub current_goal: Option<String>,
     #[serde(default)]
     pub open_questions: Vec<String>,
+}
+
+/// A single row from the `sessions` table (one per active session).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SessionInfo {
+    pub session_id: String,
+    pub agent_id: String,
+    pub turn_count: i32,
+    pub updated_at: DateTime<Utc>,
+    pub summary_preview: Option<String>,
+}
+
+/// A row from the `memory_conflicts` table — a flagged contradiction between two memories.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct MemoryConflict {
+    pub id: Uuid,
+    pub agent_id: String,
+    pub memory_a: Option<Uuid>,
+    pub memory_b: Option<Uuid>,
+    pub reason: String,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub resolution: Option<String>,
+    pub created_at: DateTime<Utc>,
 }
 
 /// A row from the `memory_graph` table (subject–predicate–object triple).

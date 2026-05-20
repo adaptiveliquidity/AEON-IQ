@@ -218,7 +218,7 @@ pub async fn handle_models(
         .status(status)
         .header("content-type", "application/json")
         .body(Body::from(bytes))
-        .unwrap())
+        .expect("static headers; infallible"))
 }
 
 // ── OpenAI / Gemini streaming path ───────────────────────────────────────────
@@ -283,7 +283,7 @@ async fn proxy_streaming(
         }
         builder = builder.header(k.as_str(), v);
     }
-    Ok(builder.body(Body::from_stream(client_stream)).unwrap())
+    Ok(builder.body(Body::from_stream(client_stream)).expect("response builder; infallible"))
 }
 
 // ── OpenAI / Gemini buffered path ─────────────────────────────────────────────
@@ -328,7 +328,7 @@ async fn proxy_buffered(
         }
         builder = builder.header(k.as_str(), v);
     }
-    Ok(builder.body(Body::from(bytes)).unwrap())
+    Ok(builder.body(Body::from(bytes)).expect("response builder; infallible"))
 }
 
 // ── Anthropic path (buffer + synthesize OpenAI response) ──────────────────────
@@ -364,7 +364,7 @@ async fn proxy_anthropic(
             .status(status)
             .header("content-type", "application/json")
             .body(Body::from(body))
-            .unwrap());
+            .expect("static headers; infallible"));
     }
 
     let bytes = upstream_resp
@@ -397,7 +397,7 @@ async fn proxy_anthropic(
             .header("cache-control", "no-cache")
             .header("x-accel-buffering", "no")
             .body(Body::from(sse))
-            .unwrap())
+            .expect("static headers; infallible"))
     } else {
         let json_body = state.provider.synthesize_json(&content, &model);
         let json_bytes = serde_json::to_vec(&json_body)
@@ -406,6 +406,6 @@ async fn proxy_anthropic(
             .status(StatusCode::OK)
             .header("content-type", "application/json")
             .body(Body::from(json_bytes))
-            .unwrap())
+            .expect("static headers; infallible"))
     }
 }

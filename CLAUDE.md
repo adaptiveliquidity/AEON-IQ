@@ -69,7 +69,7 @@ When present, `build_injection` renders each field as a labelled section (`[ACTI
 
 Archival job (`src/archival.rs`) runs on `ARCHIVAL_INTERVAL_HOURS` schedule: compacts stale zero-access L2 facts into L3 via LLM compression, then tombstones (sets `archived_at = NOW()`) originals. All queries filter `AND archived_at IS NULL` — nothing is hard-deleted.
 
-Each compaction run creates an **archival batch** (`archival_batches` table) that links the tombstoned L2 sources and the new L3 facts via `memories.archival_batch_id`. This enables atomic batch-level restore: `POST /api/v1/archival/batches/:batch_id/restore` un-tombstones L2 memories and re-tombstones the L3 facts that replaced them, then sets `batch.status = 'restored'`. A restored batch cannot be restored again (idempotency guard).
+Each compaction run creates an **archival batch** (`archival_batches` table) that links the tombstoned L2 sources and the new L3 facts via `memories.archival_batch_id`. This enables atomic batch-level restore: `POST /api/v1/archival/batches/:batch_id/restore` un-tombstones L2 memories and re-tombstones the L3 facts that replaced them, then sets `batch.status = 'restored'`. A restored batch cannot be restored again (idempotency guard). If the embedding step fails after the batch record is created, the batch is marked `status = 'failed'` (migration 0007).
 
 ### Decay-weighted retrieval
 
@@ -145,6 +145,11 @@ Migrations run automatically at startup via `sqlx::migrate!("./migrations")`. Th
 | `MANAGEMENT_API_KEY` | unset | Unauthenticated if unset |
 | `EMBEDDING_DIMENSION` | `1536` | Must match `vector(N)` in schema |
 | `GRAPH_RETRIEVAL_ENABLED` | `false` | Enable graph-walk augmentation during retrieval (Phase 4.1) |
+| `DB_MAX_CONNECTIONS` | `20` | PgPool max connections |
+| `DB_ACQUIRE_TIMEOUT_SECS` | `5` | Seconds to wait for a pool connection before error |
+| `DB_IDLE_TIMEOUT_SECS` | `300` | Seconds before idle connections are reclaimed |
+| `DEDUP_THRESHOLD` | `0.05` | Cosine distance below which an insert is skipped as a near-duplicate; 0 = disabled |
+| `CONFLICT_DETECTION_ENABLED` | `false` | Enable async LLM-based contradiction detection on each L2 insert |
 
 To switch embedding model to bge-small (384 dims): change `EMBEDDING_MODEL`, `EMBEDDING_DIMENSION=384`, and update `vector(1536)` → `vector(384)` in `migrations/0001_initial.sql`.
 
@@ -168,14 +173,25 @@ AppState {
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/agents` | List all agents |
+| DELETE | `/api/v1/agents/:id` | Delete agent and all its data (cascade) |
 | GET | `/api/v1/agents/:id/memories` | Paginated live memories |
 | POST | `/api/v1/agents/:id/memories` | Create memory manually |
+| PATCH | `/api/v1/memories/:id` | Update memory content (re-embeds) |
 | GET | `/api/v1/agents/:id/memories/archived` | Tombstoned memories |
 | GET | `/api/v1/agents/:id/archival/batches` | Archival batch history |
+| POST | `/api/v1/agents/:id/archival/trigger` | Manually trigger L2→L3 compaction |
+| GET | `/api/v1/agents/:id/sessions` | List sessions with turn counts |
+| GET | `/api/v1/agents/:id/sessions/:sid` | Session detail + working memory |
+| DELETE | `/api/v1/agents/:id/sessions/:sid` | Delete session working memory |
 | POST | `/api/v1/memories/search` | Semantic search |
 | DELETE | `/api/v1/memories/:id` | Hard-delete a memory |
 | POST | `/api/v1/memories/:id/restore` | Restore individual tombstoned memory |
 | POST | `/api/v1/archival/batches/:id/restore` | Restore entire batch (L2 back, L3 tombstoned) |
+| POST | `/api/v1/agents/:id/memories/bulk` | Bulk archive or delete memories by filter |
+| GET | `/api/v1/agents/:id/conflicts` | List unresolved (or all) memory conflicts |
+| POST | `/api/v1/conflicts/:id/resolve` | Resolve a conflict (keep_a/keep_b/keep_both/dismissed) |
+| GET | `/api/v1/agents/:id/export` | Export all live memories as NDJSON (no embeddings) |
+| POST | `/api/v1/agents/:id/import` | Import NDJSON; re-embeds each memory, runs dedup check |
 | GET | `/api/v1/stats` | Agent + memory counts |
 
 ### Observability

@@ -36,12 +36,17 @@ services:
       ARCHIVAL_MIN_MEMORIES:      ${ARCHIVAL_MIN_MEMORIES:-10}
       MANAGEMENT_API_KEY:         ${MANAGEMENT_API_KEY:-}
       UPSTREAM_PROVIDER:          ${UPSTREAM_PROVIDER:-openai}
+      DB_MAX_CONNECTIONS:         ${DB_MAX_CONNECTIONS:-20}
+      DB_ACQUIRE_TIMEOUT_SECS:    ${DB_ACQUIRE_TIMEOUT_SECS:-5}
+      DB_IDLE_TIMEOUT_SECS:       ${DB_IDLE_TIMEOUT_SECS:-300}
       RATE_LIMIT_RPM:             ${RATE_LIMIT_RPM:-0}
       RATE_LIMIT_BURST:           ${RATE_LIMIT_BURST:-20}
       MEMORY_DECAY_RATE:          ${MEMORY_DECAY_RATE:-0.0}
       IMPORTANCE_BOOST_FACTOR:    ${IMPORTANCE_BOOST_FACTOR:-0.0}
       IMPORTANCE_REFRESH_BOOST:   ${IMPORTANCE_REFRESH_BOOST:-0.05}
       EMBEDDING_BASE_URL:         ${EMBEDDING_BASE_URL:-https://api.openai.com}
+      DEDUP_THRESHOLD:            ${DEDUP_THRESHOLD:-0.05}
+      CONFLICT_DETECTION_ENABLED: ${CONFLICT_DETECTION_ENABLED:-false}
       RUST_LOG:                   memoryos_kernel=info,tower_http=info
       PORT:                       8080
     depends_on:

@@ -12,6 +12,10 @@ import {
   Lock,
   Archive,
   RotateCcw,
+  Pencil,
+  Check,
+  X,
+  Clock,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -56,9 +60,23 @@ interface ArchivalBatchDto {
   status: "completed" | "restored";
 }
 
+interface SessionDto {
+  session_id: string;
+  turn_count: number;
+  updated_at: string;
+  summary_preview: string | null;
+}
+
+interface SessionList {
+  sessions: SessionDto[];
+  total: number;
+}
+
 interface MemoryList {
   memories: MemoryDto[];
   total: number;
+  offset: number;
+  limit: number;
 }
 
 interface ArchivedMemoryList {
@@ -91,7 +109,7 @@ const PROV_COLORS: Record<string, string> = {
   inferred:          "text-zinc-400",
 };
 
-const TABS = ["browse", "search", "graph", "archived"] as const;
+const TABS = ["browse", "search", "graph", "archived", "sessions"] as const;
 type Tab = (typeof TABS)[number];
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -109,6 +127,8 @@ export default function MemoryExplorerClient({
   // Browse tab
   const [browseData, setBrowseData]     = useState<MemoryList | null>(null);
   const [browseFilter, setBrowseFilter] = useState("");
+  const [browsePage, setBrowsePage]     = useState(0);
+  const browseLimit                     = 50;
   const [adding, setAdding]             = useState(false);
   const [newContent, setNewContent]     = useState("");
   const [newType, setNewType]           = useState("semantic");
@@ -124,6 +144,9 @@ export default function MemoryExplorerClient({
   const [batchData, setBatchData]         = useState<ArchivalBatchList | null>(null);
   const [archivedView, setArchivedView]   = useState<"memories" | "history">("memories");
 
+  // Sessions tab
+  const [sessionData, setSessionData]     = useState<SessionList | null>(null);
+
   const [loading, setLoading]           = useState(false);
   const [error, setError]               = useState<string | null>(null);
 
@@ -134,13 +157,14 @@ export default function MemoryExplorerClient({
 
   // ── Data fetchers ──────────────────────────────────────────────────────────
 
-  const loadBrowse = useCallback(async () => {
+  const loadBrowse = useCallback(async (page = browsePage) => {
     if (!agentId.trim()) return;
     setLoading(true);
     setError(null);
     try {
+      const offset = page * browseLimit;
       const res = await fetch(
-        `/api/agents/${encodeURIComponent(agentId)}/memories`
+        `/api/agents/${encodeURIComponent(agentId)}/memories?limit=${browseLimit}&offset=${offset}`
       );
       if (!res.ok) throw new Error(await res.text());
       setBrowseData(await res.json());
@@ -149,7 +173,7 @@ export default function MemoryExplorerClient({
     } finally {
       setLoading(false);
     }
-  }, [agentId]);
+  }, [agentId, browsePage, browseLimit]);
 
   const loadArchived = useCallback(async () => {
     if (!agentId.trim()) return;
@@ -185,6 +209,35 @@ export default function MemoryExplorerClient({
     }
   }, [agentId]);
 
+  const loadSessions = useCallback(async () => {
+    if (!agentId.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/sessions`);
+      if (!res.ok) throw new Error(await res.text());
+      setSessionData(await res.json());
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [agentId]);
+
+  const handleDeleteSession = async (sessionId: string) => {
+    if (!confirm(`Clear working memory for session ${sessionId}?`)) return;
+    try {
+      const res = await fetch(
+        `/api/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) throw new Error(await res.text());
+      loadSessions();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const handleRestoreBatch = async (batchId: string) => {
     if (!confirm("Restore this archival batch? The original L2 memories will become live again and the compressed L3 facts will be tombstoned.")) return;
     try {
@@ -204,9 +257,10 @@ export default function MemoryExplorerClient({
         if (archivedView === "memories") loadArchived();
         else loadBatches();
       }
+      if (agentId && tab === "sessions") loadSessions();
     }, 400);
     return () => clearTimeout(t);
-  }, [agentId, tab, archivedView, loadBrowse, loadArchived, loadBatches]);
+  }, [agentId, tab, archivedView, loadBrowse, loadArchived, loadBatches, loadSessions]);
 
   const handleSemanticSearch = async () => {
     if (!agentId.trim() || !query.trim()) return;
@@ -235,6 +289,10 @@ export default function MemoryExplorerClient({
     }
   };
 
+  // Edit state
+  const [editingId, setEditingId]     = useState<string | null>(null);
+  const [editContent, setEditContent] = useState("");
+
   // ── CRUD ──────────────────────────────────────────────────────────────────
 
   const handleDelete = async (id: string) => {
@@ -242,6 +300,32 @@ export default function MemoryExplorerClient({
     await fetch(`/api/memories/${id}`, { method: "DELETE" });
     loadBrowse();
   };
+
+  const handleEditStart = (id: string, content: string) => {
+    setEditingId(id);
+    setEditContent(content);
+  };
+
+  const handleEditSave = async (id: string) => {
+    if (!editContent.trim()) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/memories/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: editContent }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setEditingId(null);
+      loadBrowse();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEditCancel = () => setEditingId(null);
 
   const handleRestore = async (id: string) => {
     await fetch(`/api/memories/${id}/restore`, { method: "POST" });
@@ -323,6 +407,7 @@ export default function MemoryExplorerClient({
             { id: "search",    label: "Semantic Search",  icon: Brain },
             { id: "graph",     label: "Knowledge Graph",  icon: GitBranch },
             { id: "archived",  label: "Archived",         icon: Archive },
+            { id: "sessions",  label: "Sessions",         icon: Clock },
           ] as const
         ).map(({ id, label, icon: Icon }) => (
           <button
@@ -361,7 +446,7 @@ export default function MemoryExplorerClient({
               />
             </div>
             <button
-              onClick={loadBrowse}
+              onClick={() => loadBrowse()}
               disabled={loading || !agentId}
               className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-zinc-700 hover:bg-zinc-800 disabled:opacity-40 transition-colors"
             >
@@ -419,10 +504,21 @@ export default function MemoryExplorerClient({
           <MemoryTable
             memories={filteredBrowse}
             total={browseData?.total}
-            loaded={filteredBrowse.length}
+            offset={browseData?.offset ?? 0}
+            limit={browseLimit}
             agentId={agentId}
             loading={loading}
+            editingId={editingId}
+            editContent={editContent}
+            onEditStart={handleEditStart}
+            onEditChange={setEditContent}
+            onEditSave={handleEditSave}
+            onEditCancel={handleEditCancel}
             onDelete={handleDelete}
+            onPrev={() => { const p = Math.max(0, browsePage - 1); setBrowsePage(p); loadBrowse(p); }}
+            onNext={() => { const p = browsePage + 1; setBrowsePage(p); loadBrowse(p); }}
+            hasPrev={browsePage > 0}
+            hasNext={browseData ? (browsePage + 1) * browseLimit < browseData.total : false}
           />
         </div>
       )}
@@ -658,6 +754,83 @@ export default function MemoryExplorerClient({
         </div>
       )}
 
+      {/* ── Sessions tab ────────────────────────────────────────────────── */}
+      {tab === "sessions" && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-zinc-400">
+              Active L1 working-memory sessions for{" "}
+              <code className="bg-zinc-800 px-1 rounded">{agentId || "—"}</code>
+            </p>
+            <button
+              onClick={loadSessions}
+              disabled={loading || !agentId}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-zinc-700 hover:bg-zinc-800 disabled:opacity-40 transition-colors"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+              Refresh
+            </button>
+          </div>
+
+          {!agentId ? (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-12 text-center text-zinc-500 text-sm">
+              Enter an Agent ID above.
+            </div>
+          ) : loading ? (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-12 text-center text-zinc-500 text-sm animate-pulse">
+              Loading…
+            </div>
+          ) : !sessionData || sessionData.sessions.length === 0 ? (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 px-5 py-12 text-center text-zinc-500 text-sm">
+              No active sessions for{" "}
+              <code className="bg-zinc-800 px-1 rounded">{agentId}</code>.
+              <p className="mt-2 text-zinc-600">Sessions are created when the proxy receives its first turn.</p>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 overflow-hidden">
+              <div className="px-5 py-3 border-b border-zinc-800 text-sm font-semibold">
+                Sessions
+                <span className="text-zinc-500 font-normal ml-2">
+                  {sessionData.total} total
+                </span>
+              </div>
+              <div className="divide-y divide-zinc-800">
+                {sessionData.sessions.map((s) => (
+                  <div key={s.session_id} className="px-5 py-4 hover:bg-zinc-800/40 transition-colors group">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-mono text-zinc-400 truncate">{s.session_id}</p>
+                        {s.summary_preview && (
+                          <p className="text-sm text-zinc-300 mt-1 leading-relaxed line-clamp-2">
+                            {s.summary_preview}
+                          </p>
+                        )}
+                        <div className="flex items-center gap-3 mt-2">
+                          <span className="text-xs text-zinc-500">
+                            {s.turn_count} turn{s.turn_count !== 1 ? "s" : ""}
+                          </span>
+                          <span className="text-xs text-zinc-600">
+                            updated {new Date(s.updated_at).toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteSession(s.session_id)}
+                        className="opacity-0 group-hover:opacity-100 flex items-center gap-1 px-2 py-1.5 rounded-lg hover:bg-red-500/20 hover:text-red-400 text-zinc-600 transition-all shrink-0 text-xs"
+                        title="Clear this session's working memory"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Knowledge Graph tab ──────────────────────────────────────────── */}
       {tab === "graph" && (
         <div className="space-y-4">
@@ -742,17 +915,39 @@ function ImportanceBadge({ score, source }: { score: number; source: string }) {
 function MemoryTable({
   memories,
   total,
-  loaded,
+  offset,
+  limit,
   agentId,
   loading,
+  editingId,
+  editContent,
+  onEditStart,
+  onEditChange,
+  onEditSave,
+  onEditCancel,
   onDelete,
+  onPrev,
+  onNext,
+  hasPrev,
+  hasNext,
 }: {
   memories: MemoryDto[];
   total: number | undefined;
-  loaded: number;
+  offset: number;
+  limit: number;
   agentId: string;
   loading: boolean;
+  editingId: string | null;
+  editContent: string;
+  onEditStart: (id: string, content: string) => void;
+  onEditChange: (v: string) => void;
+  onEditSave: (id: string) => void;
+  onEditCancel: () => void;
   onDelete: (id: string) => void;
+  onPrev: () => void;
+  onNext: () => void;
+  hasPrev: boolean;
+  hasNext: boolean;
 }) {
   if (!agentId) {
     return (
@@ -775,15 +970,36 @@ function MemoryTable({
       </div>
     );
   }
+  const from = total === 0 ? 0 : offset + 1;
+  const to   = Math.min(offset + memories.length, total ?? 0);
+
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900 overflow-hidden">
-      <div className="px-5 py-3 border-b border-zinc-800">
+      <div className="px-5 py-3 border-b border-zinc-800 flex items-center justify-between">
         <span className="text-sm font-semibold">
           Memories
           <span className="text-zinc-500 font-normal ml-2">
-            {loaded} shown / {total ?? "?"} total
+            {total != null && total > 0
+              ? `${from}–${to} of ${total.toLocaleString()}`
+              : `${memories.length} shown`}
           </span>
         </span>
+        <div className="flex gap-1">
+          <button
+            onClick={onPrev}
+            disabled={!hasPrev}
+            className="px-2.5 py-1 text-xs rounded-lg border border-zinc-700 hover:bg-zinc-800 disabled:opacity-30 transition-colors"
+          >
+            ← Prev
+          </button>
+          <button
+            onClick={onNext}
+            disabled={!hasNext}
+            className="px-2.5 py-1 text-xs rounded-lg border border-zinc-700 hover:bg-zinc-800 disabled:opacity-30 transition-colors"
+          >
+            Next →
+          </button>
+        </div>
       </div>
       <div className="divide-y divide-zinc-800">
         {memories.map((m) => (
@@ -791,45 +1007,83 @@ function MemoryTable({
             key={m.id}
             className="px-5 py-4 hover:bg-zinc-800/40 transition-colors group"
           >
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-zinc-200 leading-relaxed">{m.content}</p>
-                <div className="flex flex-wrap items-center gap-2 mt-2">
-                  <span
-                    className={`text-xs px-2 py-0.5 rounded-full border ${
-                      TYPE_COLORS[m.memory_type] ?? "bg-zinc-700 text-zinc-300 border-zinc-600"
-                    }`}
+            {editingId === m.id ? (
+              /* ── Inline edit form ─────────────────────────────────── */
+              <div className="space-y-2">
+                <textarea
+                  value={editContent}
+                  onChange={(e) => onEditChange(e.target.value)}
+                  rows={3}
+                  autoFocus
+                  className="w-full bg-zinc-800 border border-green-600/50 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-green-500 resize-none"
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => onEditSave(m.id)}
+                    disabled={!editContent.trim()}
+                    className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg bg-green-600 hover:bg-green-500 disabled:opacity-40 font-medium"
                   >
-                    {m.memory_type}
-                  </span>
-                  <span className={`text-xs ${PROV_COLORS[m.provenance] ?? "text-zinc-500"}`}>
-                    {m.provenance}
-                  </span>
-                  <ImportanceBadge score={m.importance_score} source={m.importance_source} />
-                  <span className="text-xs text-zinc-500">
-                    conf: {(m.confidence * 100).toFixed(0)}%
-                  </span>
-                  {m.source_turn !== null && (
-                    <span className="text-xs text-zinc-500">turn {m.source_turn}</span>
-                  )}
-                  {m.session_id && (
-                    <span className="text-xs text-zinc-600 font-mono truncate max-w-[160px]">
-                      {m.session_id}
-                    </span>
-                  )}
-                  <span className="text-xs text-zinc-600">
-                    {new Date(m.created_at).toLocaleString()}
-                  </span>
+                    <Check className="w-3 h-3" /> Save
+                  </button>
+                  <button
+                    onClick={onEditCancel}
+                    className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg border border-zinc-700 hover:bg-zinc-800"
+                  >
+                    <X className="w-3 h-3" /> Cancel
+                  </button>
                 </div>
               </div>
-              <button
-                onClick={() => onDelete(m.id)}
-                className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-red-500/20 hover:text-red-400 text-zinc-600 transition-all shrink-0"
-                title="Delete memory"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
+            ) : (
+              /* ── Normal view ──────────────────────────────────────── */
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-zinc-200 leading-relaxed">{m.content}</p>
+                  <div className="flex flex-wrap items-center gap-2 mt-2">
+                    <span
+                      className={`text-xs px-2 py-0.5 rounded-full border ${
+                        TYPE_COLORS[m.memory_type] ?? "bg-zinc-700 text-zinc-300 border-zinc-600"
+                      }`}
+                    >
+                      {m.memory_type}
+                    </span>
+                    <span className={`text-xs ${PROV_COLORS[m.provenance] ?? "text-zinc-500"}`}>
+                      {m.provenance}
+                    </span>
+                    <ImportanceBadge score={m.importance_score} source={m.importance_source} />
+                    <span className="text-xs text-zinc-500">
+                      conf: {(m.confidence * 100).toFixed(0)}%
+                    </span>
+                    {m.source_turn !== null && (
+                      <span className="text-xs text-zinc-500">turn {m.source_turn}</span>
+                    )}
+                    {m.session_id && (
+                      <span className="text-xs text-zinc-600 font-mono truncate max-w-[160px]">
+                        {m.session_id}
+                      </span>
+                    )}
+                    <span className="text-xs text-zinc-600">
+                      {new Date(m.created_at).toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all shrink-0">
+                  <button
+                    onClick={() => onEditStart(m.id, m.content)}
+                    className="p-1.5 rounded-lg hover:bg-blue-500/20 hover:text-blue-400 text-zinc-600"
+                    title="Edit memory"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => onDelete(m.id)}
+                    className="p-1.5 rounded-lg hover:bg-red-500/20 hover:text-red-400 text-zinc-600"
+                    title="Delete memory"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         ))}
       </div>

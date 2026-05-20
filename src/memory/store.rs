@@ -4,7 +4,7 @@ use sqlx::QueryBuilder;
 use uuid::Uuid;
 
 use crate::{
-    models::{ArchivalBatch, ArchivedMemory, Memory, MemorySearchRow, WorkingMemory},
+    models::{ArchivalBatch, Memory, MemorySearchRow, WorkingMemory},
     AppState,
 };
 
@@ -28,6 +28,43 @@ pub async fn count_agents(state: &AppState) -> Result<i64> {
     Ok(row.0)
 }
 
+/// Delete an agent and all associated data in a single transaction.
+///
+/// Returns `true` if the agent existed and was deleted, `false` if not found.
+pub async fn delete_agent(state: &AppState, agent_id: &str) -> Result<bool> {
+    let mut tx = state.db.begin().await?;
+
+    // memories must be deleted before archival_batches (FK: memories.archival_batch_id)
+    sqlx::query("DELETE FROM memories WHERE agent_id = $1")
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM working_memory WHERE agent_id = $1")
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM entities WHERE agent_id = $1")
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM memory_graph WHERE agent_id = $1")
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM audit_logs WHERE agent_id = $1")
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await?;
+    // sessions and archival_batches cascade from agents; delete agent row last
+    let result = sqlx::query("DELETE FROM agents WHERE agent_id = $1")
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(result.rows_affected() > 0)
+}
+
 // ── Memories ──────────────────────────────────────────────────────────────────
 
 pub async fn store_memory(
@@ -43,14 +80,61 @@ pub async fn store_memory(
     importance_score: f32,
     importance_source: &str,
 ) -> Result<Uuid> {
-    store_memory_with_tier(
+    // ── Dedup check ───────────────────────────────────────────────────────────
+    // Bind the vector once in a CTE to avoid double-scan.  If the nearest
+    // existing live memory is closer than the threshold, skip the insert and
+    // return the existing ID (bumping its confidence if the new value is higher).
+    if state.config.dedup_threshold > 0.0 {
+        let vec = Vector::from(embedding.clone());
+        let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
+            "WITH q AS (SELECT ",
+        );
+        qb.push_bind(vec);
+        qb.push(
+            " AS vec) \
+             SELECT id, (embedding <=> vec)::double precision AS distance \
+             FROM memories CROSS JOIN q \
+             WHERE agent_id = ",
+        );
+        qb.push_bind(agent_id);
+        qb.push(" AND archived_at IS NULL ORDER BY embedding <=> vec LIMIT 1");
+
+        if let Some((existing_id, distance)) = qb
+            .build_query_as::<(Uuid, f64)>()
+            .fetch_optional(&state.db)
+            .await?
+        {
+            if distance < state.config.dedup_threshold {
+                tracing::debug!(
+                    agent_id, %existing_id, distance,
+                    "dedup: skipping near-duplicate memory"
+                );
+                state.metrics.dedup_skipped_total.inc();
+                // Raise confidence if the repeated fact is stated with higher certainty.
+                sqlx::query(
+                    "UPDATE memories \
+                     SET access_count = access_count + 1, \
+                         last_accessed_at = NOW(), \
+                         confidence = GREATEST(confidence, $2) \
+                     WHERE id = $1",
+                )
+                .bind(existing_id)
+                .bind(confidence)
+                .execute(&state.db)
+                .await?;
+                return Ok(existing_id);
+            }
+        }
+    }
+
+    let id = store_memory_with_tier(
         state,
         agent_id,
         session_id,
         content,
         memory_type,
         confidence,
-        embedding,
+        embedding.clone(),
         source_turn,
         "L2",
         provenance,
@@ -58,7 +142,20 @@ pub async fn store_memory(
         importance_source,
         None,
     )
-    .await
+    .await?;
+
+    // Spawn async conflict detection (only when enabled; never blocks the caller).
+    if state.config.conflict_detection_enabled {
+        let s = state.clone();
+        let aid = agent_id.to_string();
+        let c = content.to_string();
+        let emb = embedding;
+        tokio::spawn(async move {
+            crate::memory::conflicts::detect_and_store(&s, &aid, id, &c, &emb).await;
+        });
+    }
+
+    Ok(id)
 }
 
 pub async fn store_memory_with_tier(
@@ -219,7 +316,7 @@ pub async fn list_memories_for_agent(
     let rows = sqlx::query_as::<_, Memory>(
         r#"
         SELECT id, agent_id, session_id, content, memory_type, confidence, provenance,
-               created_at, source_turn, importance_score, importance_source
+               created_at, updated_at, source_turn, importance_score, importance_source
         FROM memories
         WHERE agent_id = $1
           AND archived_at IS NULL
@@ -281,6 +378,27 @@ pub async fn delete_memory(state: &AppState, id: Uuid) -> Result<bool> {
     Ok(r.rows_affected() > 0)
 }
 
+/// Update a memory's content and re-embed it.  Returns false if the memory
+/// does not exist or is tombstoned.
+pub async fn update_memory_content(
+    state: &AppState,
+    id: Uuid,
+    content: &str,
+    embedding: Vec<f32>,
+) -> Result<bool> {
+    let vec = Vector::from(embedding);
+    let r = sqlx::query(
+        "UPDATE memories SET content = $1, embedding = $2, updated_at = NOW()
+         WHERE id = $3 AND archived_at IS NULL",
+    )
+    .bind(content)
+    .bind(vec)
+    .bind(id)
+    .execute(&state.db)
+    .await?;
+    Ok(r.rows_affected() > 0)
+}
+
 pub async fn count_memories(state: &AppState) -> Result<i64> {
     let row: (i64,) =
         sqlx::query_as("SELECT COUNT(*)::bigint FROM memories WHERE archived_at IS NULL")
@@ -336,7 +454,70 @@ pub async fn upsert_working_memory(
     .bind(state_json)
     .execute(&state.db)
     .await?;
+
+    // Mirror turn_count into the sessions table so it stays queryable there.
+    sqlx::query(
+        r#"
+        INSERT INTO sessions (session_id, agent_id, turn_count)
+        VALUES ($1, $2, 1)
+        ON CONFLICT (agent_id, session_id) DO UPDATE
+            SET turn_count = EXCLUDED.turn_count + sessions.turn_count,
+                ended_at   = NULL
+        "#,
+    )
+    .bind(session_id)
+    .bind(agent_id)
+    .execute(&state.db)
+    .await?;
+
     Ok(())
+}
+
+/// List all sessions (working_memory rows) for an agent, newest first.
+/// Returns session_id, turn_count, updated_at, and a 150-char summary preview.
+pub async fn list_sessions_for_agent(
+    state: &AppState,
+    agent_id: &str,
+) -> Result<Vec<crate::models::SessionInfo>> {
+    let rows = sqlx::query_as::<_, crate::models::SessionInfo>(
+        r#"
+        SELECT session_id, agent_id, turn_count, updated_at,
+               LEFT(summary, 150) AS summary_preview
+        FROM working_memory
+        WHERE agent_id = $1
+        ORDER BY updated_at DESC
+        "#,
+    )
+    .bind(agent_id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(rows)
+}
+
+/// Fetch the full L1 summary for a single session.
+pub async fn get_session_detail(
+    state: &AppState,
+    agent_id: &str,
+    session_id: &str,
+) -> Result<Option<WorkingMemory>> {
+    get_working_memory(state, agent_id, session_id).await
+}
+
+/// Clear working memory for a session (hard-deletes the L1 summary row).
+/// Returns false if the session had no working memory entry.
+pub async fn delete_session_working_memory(
+    state: &AppState,
+    agent_id: &str,
+    session_id: &str,
+) -> Result<bool> {
+    let r = sqlx::query(
+        "DELETE FROM working_memory WHERE agent_id = $1 AND session_id = $2",
+    )
+    .bind(agent_id)
+    .bind(session_id)
+    .execute(&state.db)
+    .await?;
+    Ok(r.rows_affected() > 0)
 }
 
 // ── Entities ──────────────────────────────────────────────────────────────────
@@ -655,6 +836,18 @@ pub async fn create_archival_batch(
     Ok(row.0)
 }
 
+/// Mark an archival batch as failed so it is distinguishable from a
+/// successful batch that happened to produce zero L3 facts.
+pub async fn fail_archival_batch(state: &AppState, batch_id: Uuid) -> Result<()> {
+    sqlx::query(
+        "UPDATE archival_batches SET status = 'failed', completed_at = NOW() WHERE id = $1",
+    )
+    .bind(batch_id)
+    .execute(&state.db)
+    .await?;
+    Ok(())
+}
+
 /// Tombstone L2 memories and tag them with the batch that archived them.
 pub async fn tombstone_memories_with_batch(
     state: &AppState,
@@ -760,6 +953,136 @@ pub async fn restore_archival_batch(
     }))
 }
 
+// ── Export ────────────────────────────────────────────────────────────────────
+
+/// Fetch all live (non-tombstoned) memories for an agent suitable for NDJSON export.
+/// Embeddings are excluded — they must be re-computed on import.
+pub async fn export_memories_for_agent(
+    state: &AppState,
+    agent_id: &str,
+) -> Result<Vec<crate::models::MemoryExportRow>> {
+    let rows = sqlx::query_as(
+        "SELECT id, session_id, content, memory_type, confidence, provenance, \
+                tier, importance_score, importance_source, created_at \
+         FROM memories \
+         WHERE agent_id = $1 AND archived_at IS NULL \
+         ORDER BY created_at ASC",
+    )
+    .bind(agent_id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(rows)
+}
+
+// ── Bulk operations ───────────────────────────────────────────────────────────
+
+/// Archive or delete memories matching an optional set of filters.
+/// Returns the number of rows affected.
+///
+/// `action` must be either `"archive"` (tombstone) or `"delete"` (hard-delete).
+pub async fn bulk_operation_memories(
+    state: &AppState,
+    agent_id: &str,
+    action: &str,
+    session_id: Option<&str>,
+    memory_type: Option<&str>,
+    older_than: Option<chrono::DateTime<chrono::Utc>>,
+    importance_below: Option<f32>,
+) -> Result<u64> {
+    let mut qb: QueryBuilder<sqlx::Postgres> = if action == "archive" {
+        QueryBuilder::new("UPDATE memories SET archived_at = NOW() WHERE archived_at IS NULL AND agent_id = ")
+    } else {
+        QueryBuilder::new("DELETE FROM memories WHERE archived_at IS NULL AND agent_id = ")
+    };
+    qb.push_bind(agent_id);
+
+    if let Some(sid) = session_id {
+        qb.push(" AND session_id = ");
+        qb.push_bind(sid);
+    }
+    if let Some(mt) = memory_type {
+        qb.push(" AND memory_type = ");
+        qb.push_bind(mt);
+    }
+    if let Some(dt) = older_than {
+        qb.push(" AND created_at < ");
+        qb.push_bind(dt);
+    }
+    if let Some(imp) = importance_below {
+        qb.push(" AND importance_score < ");
+        qb.push_bind(imp);
+    }
+
+    let r = qb.build().execute(&state.db).await?;
+    Ok(r.rows_affected())
+}
+
+// ── Conflict store ────────────────────────────────────────────────────────────
+
+pub async fn store_conflict(
+    state: &AppState,
+    agent_id: &str,
+    memory_a: Uuid,
+    memory_b: Uuid,
+    reason: &str,
+) -> Result<Uuid> {
+    let row: (Uuid,) = sqlx::query_as(
+        "INSERT INTO memory_conflicts (agent_id, memory_a, memory_b, reason) \
+         VALUES ($1, $2, $3, $4) RETURNING id",
+    )
+    .bind(agent_id)
+    .bind(memory_a)
+    .bind(memory_b)
+    .bind(reason)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(row.0)
+}
+
+pub async fn list_conflicts(
+    state: &AppState,
+    agent_id: &str,
+    include_resolved: bool,
+) -> Result<Vec<crate::models::MemoryConflict>> {
+    let rows = if include_resolved {
+        sqlx::query_as(
+            "SELECT id, agent_id, memory_a, memory_b, reason, resolved_at, resolution, created_at \
+             FROM memory_conflicts WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 200",
+        )
+        .bind(agent_id)
+        .fetch_all(&state.db)
+        .await?
+    } else {
+        sqlx::query_as(
+            "SELECT id, agent_id, memory_a, memory_b, reason, resolved_at, resolution, created_at \
+             FROM memory_conflicts WHERE agent_id = $1 AND resolved_at IS NULL \
+             ORDER BY created_at DESC LIMIT 200",
+        )
+        .bind(agent_id)
+        .fetch_all(&state.db)
+        .await?
+    };
+    Ok(rows)
+}
+
+/// Mark a conflict as resolved.  Returns `true` if found and unresolved, `false` otherwise.
+pub async fn resolve_conflict(
+    state: &AppState,
+    conflict_id: Uuid,
+    resolution: &str,
+) -> Result<bool> {
+    let r = sqlx::query(
+        "UPDATE memory_conflicts \
+         SET resolved_at = NOW(), resolution = $2 \
+         WHERE id = $1 AND resolved_at IS NULL",
+    )
+    .bind(conflict_id)
+    .bind(resolution)
+    .execute(&state.db)
+    .await?;
+    Ok(r.rows_affected() > 0)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -809,6 +1132,9 @@ mod tests {
                 database_url: String::new(),
                 upstream_base_url: "http://localhost".into(),
                 port: 8080,
+                db_max_connections: 5,
+                db_acquire_timeout_secs: 5,
+                db_idle_timeout_secs: 300,
                 openai_api_key: None,
                 embedding_model: "test".into(),
                 embedding_dimension: 1536,
@@ -827,6 +1153,8 @@ mod tests {
                 rate_limit_rpm: 0,
                 rate_limit_burst: 20,
                 graph_retrieval_enabled: false,
+                dedup_threshold: 0.0,
+                conflict_detection_enabled: false,
             }),
             db: pool,
             http_client: reqwest::Client::new(),

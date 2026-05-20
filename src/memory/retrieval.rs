@@ -49,6 +49,7 @@ pub async fn retrieve_relevant(
             confidence: r.confidence,
             provenance: r.provenance.clone(),
             created_at: r.created_at,
+            updated_at: r.created_at,
             source_turn: r.source_turn,
             importance_score: r.importance_score,
             importance_source: r.importance_source.clone(),

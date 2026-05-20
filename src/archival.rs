@@ -15,8 +15,17 @@
 
 use anyhow::Result;
 use tracing::{error, info, warn};
+use uuid::Uuid;
 
 use crate::{embeddings::embed_texts, memory::store, AppState};
+
+/// Returned by `archive_agent` so callers (API + cron job) can report results.
+pub struct ArchivalResult {
+    pub batch_id: Uuid,
+    pub source_count: usize,
+    pub l3_count: usize,
+    pub status: &'static str,
+}
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -60,8 +69,11 @@ async fn run_cycle(state: &AppState) -> Result<()> {
     info!("Archival candidates: {} agents", agent_ids.len());
 
     for agent_id in agent_ids {
-        if let Err(e) = archive_agent(state, &agent_id, min_age, min_count).await {
-            warn!(agent_id = %agent_id, "Per-agent archival failed: {}", e);
+        match archive_agent(state, &agent_id, min_age, min_count).await {
+            Ok(Some(r)) => info!(agent_id = %agent_id, batch = %r.batch_id,
+                source = r.source_count, l3 = r.l3_count, "Archival complete"),
+            Ok(None)    => {},
+            Err(e)      => warn!(agent_id = %agent_id, "Per-agent archival failed: {}", e),
         }
     }
     Ok(())
@@ -69,16 +81,20 @@ async fn run_cycle(state: &AppState) -> Result<()> {
 
 // ── Per-agent compaction ──────────────────────────────────────────────────────
 
-async fn archive_agent(
+/// Compact stale L2 memories for one agent into L3 facts.
+///
+/// Returns `Ok(None)` when there are not enough candidates.
+/// Returns `Ok(Some(result))` on success.
+pub async fn archive_agent(
     state: &AppState,
     agent_id: &str,
     min_age_days: i64,
     min_memories: usize,
-) -> Result<()> {
+) -> Result<Option<ArchivalResult>> {
     let candidates = store::fetch_archivable_memories(state, agent_id, min_age_days, 50).await?;
 
     if candidates.len() < min_memories {
-        return Ok(());
+        return Ok(None);
     }
 
     let count = candidates.len();
@@ -127,7 +143,7 @@ async fn archive_agent(
     let compressed = parse_compressed_facts(raw);
     if compressed.is_empty() {
         warn!(agent_id = %agent_id, "No compressed facts returned — skipping deletion");
-        return Ok(());
+        return Ok(None);
     }
 
     // ── Create versioned batch record before mutating any rows ───────────────
@@ -142,33 +158,36 @@ async fn archive_agent(
 
     // ── Batch-embed all compressed facts, then store as L3 ───────────────────
     let fact_refs: Vec<&str> = compressed.iter().map(|s| s.as_str()).collect();
-    match embed_texts(state, &fact_refs).await {
-        Ok(embeddings) => {
-            for (fact, emb) in compressed.iter().zip(embeddings) {
-                if let Err(e) = store::store_memory_with_tier(
-                    state,
-                    agent_id,
-                    None,
-                    fact,
-                    "semantic",
-                    0.7,
-                    emb,
-                    None,
-                    "L3",
-                    "inferred",
-                    0.5_f32,
-                    "extractor",
-                    Some(batch_id),
-                )
-                .await
-                {
-                    warn!(agent_id = %agent_id, "Failed to store L3 fact: {}", e);
-                }
-            }
-        }
+    let embeddings = match embed_texts(state, &fact_refs).await {
+        Ok(embs) => embs,
         Err(e) => {
             warn!(agent_id = %agent_id, "Batch embedding failed for L3 facts: {}", e);
-            return Ok(());
+            if let Err(fe) = store::fail_archival_batch(state, batch_id).await {
+                warn!(agent_id = %agent_id, "Could not mark batch as failed: {}", fe);
+            }
+            return Ok(None);
+        }
+    };
+
+    for (fact, emb) in compressed.iter().zip(embeddings) {
+        if let Err(e) = store::store_memory_with_tier(
+            state,
+            agent_id,
+            None,
+            fact,
+            "semantic",
+            0.7,
+            emb,
+            None,
+            "L3",
+            "inferred",
+            0.5_f32,
+            "extractor",
+            Some(batch_id),
+        )
+        .await
+        {
+            warn!(agent_id = %agent_id, "Failed to store L3 fact: {}", e);
         }
     }
 
@@ -190,13 +209,25 @@ async fn archive_agent(
         "L2→L3 compaction complete"
     );
 
-    Ok(())
+    Ok(Some(ArchivalResult {
+        batch_id,
+        source_count: count,
+        l3_count: stored_count,
+        status: "completed",
+    }))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+fn strip_code_fences(s: &str) -> &str {
+    // Some models wrap JSON in ```json ... ``` even with response_format set.
+    let s = s.trim();
+    let s = s.strip_prefix("```json").or_else(|| s.strip_prefix("```")).unwrap_or(s);
+    s.trim_end_matches("```").trim()
+}
+
 fn parse_compressed_facts(raw: &str) -> Vec<String> {
-    // Try {"facts": [...]} first, then a bare array.
+    let raw = strip_code_fences(raw);
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
         let arr = v["facts"].as_array().or_else(|| v.as_array());
         if let Some(arr) = arr {
@@ -206,6 +237,46 @@ fn parse_compressed_facts(raw: &str) -> Vec<String> {
                 .collect();
         }
     }
-    // Last resort: try as bare JSON array of strings.
-    serde_json::from_str::<Vec<String>>(raw).unwrap_or_default()
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_facts_from_object_key() {
+        let raw = r#"{"facts": ["Alex is building NovaPay", "NovaPay does cross-border payments"]}"#;
+        let facts = parse_compressed_facts(raw);
+        assert_eq!(facts.len(), 2);
+        assert_eq!(facts[0], "Alex is building NovaPay");
+    }
+
+    #[test]
+    fn parse_facts_from_bare_array() {
+        let raw = r#"["Fact one", "Fact two", "Fact three"]"#;
+        let facts = parse_compressed_facts(raw);
+        assert_eq!(facts.len(), 3);
+    }
+
+    #[test]
+    fn parse_facts_strips_markdown_fences() {
+        let raw = "```json\n{\"facts\": [\"Stripped fact\"]}\n```";
+        let facts = parse_compressed_facts(raw);
+        assert_eq!(facts, vec!["Stripped fact"]);
+    }
+
+    #[test]
+    fn parse_facts_strips_plain_fences() {
+        let raw = "```\n[\"Bare array fact\"]\n```";
+        let facts = parse_compressed_facts(raw);
+        assert_eq!(facts, vec!["Bare array fact"]);
+    }
+
+    #[test]
+    fn parse_facts_returns_empty_on_garbage() {
+        assert!(parse_compressed_facts("not json at all").is_empty());
+        assert!(parse_compressed_facts("").is_empty());
+        assert!(parse_compressed_facts("{}").is_empty());
+    }
 }

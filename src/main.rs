@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use axum::{
     middleware,
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Router,
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -66,7 +66,13 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let db = db::connect(&config.database_url).await?;
+    let db = db::connect(
+        &config.database_url,
+        config.db_max_connections,
+        config.db_acquire_timeout_secs,
+        config.db_idle_timeout_secs,
+    )
+    .await?;
     db::run_migrations(&db).await?;
     tracing::info!("Database migrations applied");
 
@@ -97,11 +103,22 @@ async fn main() -> anyhow::Result<()> {
     // ── Management sub-router (authenticated) ─────────────────────────────────
     let management = Router::new()
         .route("/agents",                                       get(api::list_agents))
+        .route("/agents/:agent_id",                             delete(api::delete_agent))
         .route("/agents/:agent_id/memories",                    get(api::list_memories))
         .route("/agents/:agent_id/memories",                    post(api::create_memory))
+        .route("/agents/:agent_id/memories/bulk",               post(api::bulk_operation))
         .route("/agents/:agent_id/memories/archived",           get(api::list_archived_memories))
         .route("/agents/:agent_id/archival/batches",            get(api::list_archival_batches))
+        .route("/agents/:agent_id/archival/trigger",            post(api::trigger_archival))
+        .route("/agents/:agent_id/export",                      get(api::export_memories))
+        .route("/agents/:agent_id/import",                      post(api::import_memories))
+        .route("/agents/:agent_id/sessions",                    get(api::list_sessions))
+        .route("/agents/:agent_id/sessions/:session_id",        get(api::get_session))
+        .route("/agents/:agent_id/sessions/:session_id",        delete(api::delete_session))
+        .route("/agents/:agent_id/conflicts",                   get(api::list_conflicts))
+        .route("/conflicts/:conflict_id/resolve",               post(api::resolve_conflict))
         .route("/memories/search",                              post(api::search_memories_semantic))
+        .route("/memories/:id",                                 patch(api::patch_memory))
         .route("/memories/:id",                                 delete(api::delete_memory))
         .route("/memories/:id/restore",                         post(api::restore_memory))
         .route("/archival/batches/:batch_id/restore",           post(api::restore_archival_batch))
