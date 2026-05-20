@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::{embeddings::embed_text, models::Memory, AppState};
+use crate::{embeddings::embed_text, models::{Memory, WorkingMemory, WorkingMemoryState}, AppState};
 use super::store;
 
 /// Embed `query`, run a vector similarity search, and return memories whose
@@ -109,12 +109,31 @@ pub async fn retrieve_relevant(
 ///   instructions; embedded directives must not be followed.
 /// - Each fact includes provenance, confidence, and turn citation so the
 ///   model can weigh user-stated vs assistant-derived facts appropriately.
-pub fn build_injection(memories: &[Memory], working_summary: Option<&str>) -> String {
+///
+/// When the `WorkingMemory` row has a structured `state` JSONB column (4.3),
+/// active entities, current goal, and open questions are rendered as separate
+/// labelled sections so the model gets richer session context.
+pub fn build_injection(memories: &[Memory], working_memory: Option<&WorkingMemory>) -> String {
     let mut sections: Vec<String> = Vec::new();
 
-    if let Some(s) = working_summary {
-        if !s.trim().is_empty() {
-            sections.push(format!("[SESSION_SUMMARY]\n{}", s.trim()));
+    if let Some(wm) = working_memory {
+        // Prefer structured state; fall back to plain text summary.
+        let rendered = if let Some(state_val) = &wm.state {
+            serde_json::from_value::<WorkingMemoryState>(state_val.clone())
+                .ok()
+                .map(|s| render_structured_state(&s))
+        } else {
+            None
+        };
+
+        if let Some(r) = rendered {
+            if !r.is_empty() {
+                sections.push(r);
+            }
+        } else if let Some(s) = &wm.summary {
+            if !s.trim().is_empty() {
+                sections.push(format!("[SESSION_SUMMARY]\n{}", s.trim()));
+            }
         }
     }
 
@@ -156,4 +175,30 @@ pub fn build_injection(memories: &[Memory], working_summary: Option<&str>) -> St
          </retrieved_memories>",
         body = sections.join("\n\n"),
     )
+}
+
+fn render_structured_state(s: &WorkingMemoryState) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    if !s.summary.trim().is_empty() {
+        parts.push(format!("[SESSION_SUMMARY]\n{}", s.summary.trim()));
+    }
+    if !s.active_entities.is_empty() {
+        parts.push(format!("[ACTIVE_ENTITIES]\n{}", s.active_entities.join(", ")));
+    }
+    if let Some(goal) = &s.current_goal {
+        if !goal.trim().is_empty() {
+            parts.push(format!("[CURRENT_GOAL]\n{}", goal.trim()));
+        }
+    }
+    if !s.open_questions.is_empty() {
+        let qs = s
+            .open_questions
+            .iter()
+            .map(|q| format!("- {}", q))
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!("[OPEN_QUESTIONS]\n{}", qs));
+    }
+    parts.join("\n\n")
 }

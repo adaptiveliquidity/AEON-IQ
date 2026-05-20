@@ -99,8 +99,7 @@ pub async fn handle_chat_completions(
                         .await
                         .ok()
                         .flatten();
-                    let summary = wm.as_ref().and_then(|w| w.summary.as_deref());
-                    let injection = build_injection(&memories, summary);
+                    let injection = build_injection(&memories, wm.as_ref());
 
                     if !injection.is_empty() {
                         info!(agent_id = %agent_id, count = mem_count, "Injecting memories");

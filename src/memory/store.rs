@@ -297,7 +297,7 @@ pub async fn get_working_memory(
     session_id: &str,
 ) -> Result<Option<WorkingMemory>> {
     let wm = sqlx::query_as::<_, WorkingMemory>(
-        "SELECT id, agent_id, session_id, summary, turn_count, updated_at
+        "SELECT id, agent_id, session_id, summary, turn_count, updated_at, state
          FROM working_memory
          WHERE agent_id = $1 AND session_id = $2",
     )
@@ -313,20 +313,27 @@ pub async fn upsert_working_memory(
     agent_id: &str,
     session_id: &str,
     summary: &str,
+    structured_state: Option<&crate::models::WorkingMemoryState>,
 ) -> Result<()> {
+    let state_json = structured_state
+        .map(|s| serde_json::to_value(s))
+        .transpose()?;
+
     sqlx::query(
         r#"
-        INSERT INTO working_memory (agent_id, session_id, summary, turn_count)
-        VALUES ($1, $2, $3, 1)
+        INSERT INTO working_memory (agent_id, session_id, summary, turn_count, state)
+        VALUES ($1, $2, $3, 1, $4)
         ON CONFLICT (agent_id, session_id) DO UPDATE
             SET summary    = EXCLUDED.summary,
                 turn_count = working_memory.turn_count + 1,
-                updated_at = NOW()
+                updated_at = NOW(),
+                state      = EXCLUDED.state
         "#,
     )
     .bind(agent_id)
     .bind(session_id)
     .bind(summary)
+    .bind(state_json)
     .execute(&state.db)
     .await?;
     Ok(())

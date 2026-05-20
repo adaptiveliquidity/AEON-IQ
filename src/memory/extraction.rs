@@ -34,6 +34,9 @@ Required output schema:
   "entities": [{"name": "NovaPay", "type": "company", "confidence": 0.95}],
   "relations": [{"subject": "alex", "predicate": "founded", "object": "NovaPay"}],
   "updated_summary": "Concise executive summary, max 200 tokens.",
+  "active_entities": ["NovaPay", "Stripe API"],
+  "current_goal": "Debug the webhook handler",
+  "open_questions": ["Which auth method to use?"],
   "memory_type": "episodic",
   "confidence_low": false
 }
@@ -59,7 +62,14 @@ IMPORTANCE SCORING RULES (strictly follow):
 - 0.5–0.79 = Standard episodic detail or preference
 - 0.0–0.49 = Trivial / conversational filler / small talk
 Recognise <important>…</important> in [assistant] lines as a hard signal for score >= 0.9.
-importance_source must be "extractor" (set automatically; may be overridden server-side)."#;
+importance_source must be "extractor" (set automatically; may be overridden server-side).
+
+STRUCTURED SESSION STATE (always include):
+- active_entities: list of entity names actively referenced in THIS conversation window (max 10).
+- current_goal: single sentence describing what the user/agent is trying to accomplish right now.
+  Omit (null) if no clear goal is discernible.
+- open_questions: list of unresolved questions or ambiguities from this session (max 5).
+  Empty array [] if none."#;
 
 /// Entry point called from `tokio::spawn`. Logs errors, never panics.
 pub async fn extract_and_store(
@@ -256,9 +266,20 @@ async fn run_extraction(
         }
     }
 
-    if let Err(e) =
-        store::upsert_working_memory(state, agent_id, session_id, &extraction.updated_summary)
-            .await
+    let structured_state = crate::models::WorkingMemoryState {
+        summary: extraction.updated_summary.clone(),
+        active_entities: extraction.active_entities.clone(),
+        current_goal: extraction.current_goal.clone(),
+        open_questions: extraction.open_questions.clone(),
+    };
+    if let Err(e) = store::upsert_working_memory(
+        state,
+        agent_id,
+        session_id,
+        &extraction.updated_summary,
+        Some(&structured_state),
+    )
+    .await
     {
         warn!(agent_id = %agent_id, "Failed to update working memory: {}", e);
     }
