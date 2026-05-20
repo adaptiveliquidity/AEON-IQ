@@ -69,7 +69,7 @@ When present, `build_injection` renders each field as a labelled section (`[ACTI
 
 Archival job (`src/archival.rs`) runs on `ARCHIVAL_INTERVAL_HOURS` schedule: compacts stale zero-access L2 facts into L3 via LLM compression, then tombstones (sets `archived_at = NOW()`) originals. All queries filter `AND archived_at IS NULL` — nothing is hard-deleted.
 
-Each compaction run creates an **archival batch** (`archival_batches` table) that links the tombstoned L2 sources and the new L3 facts via `memories.archival_batch_id`. This enables atomic batch-level restore: `POST /api/v1/archival/batches/:batch_id/restore` un-tombstones L2 memories and re-tombstones the L3 facts that replaced them, then sets `batch.status = 'restored'`. A restored batch cannot be restored again (idempotency guard). If the embedding step fails after the batch record is created, the batch is marked `status = 'failed'` (migration 0007).
+Each compaction run creates an **archival batch** (`archival_batches` table) that links the tombstoned L2 sources and the new L3 facts via `memories.archival_batch_id`. This enables atomic batch-level restore: `POST /api/v1/archival/batches/:batch_id/restore` un-tombstones L2 memories and re-tombstones the L3 facts that replaced them, then sets `batch.status = 'restored'`. A restored batch cannot be restored again (idempotency guard). If the embedding step fails after the batch record is created, the batch is marked `status = 'failed'` (migration 0010).
 
 ### Decay-weighted retrieval
 
@@ -205,3 +205,27 @@ Prometheus metrics at `GET /metrics` (text format 0.0.4). Key counters/histogram
 - **`memory_entity_links`** (migration 0007) — join table mapping `memory_id → entity_id`. Populated by `extraction.rs` after each turn: every stored memory is linked to every entity extracted in the same turn.
 - **Graph-walk retrieval** (`GRAPH_RETRIEVAL_ENABLED=true`) — `retrieve_relevant` matches entity names from the query against `entities`, walks `memory_graph` one hop, then fetches memories linked to those related entities via `memory_entity_links`. Results are merged after the primary vector set.
 - **Entity disambiguation** (migration 0008, `fuzzystrmatch`) — `upsert_entity` checks `levenshtein(LOWER(name), LOWER(new)) <= 2` before inserting. Near-duplicates (e.g. "Alex" / "Alexander") are merged into the canonical (existing) entity name.
+
+### CI/CD (Phase 3)
+
+GitHub Actions workflows in `.github/workflows/`:
+- **`ci.yml`** — runs on every push/PR to `main`: Rust lint (`clippy`, `rustfmt`), unit tests (no DB), integration tests (Postgres+pgvector service container), dashboard lint (`npm run lint`).
+- **`publish.yml`** — Docker publish workflow; builds and pushes the kernel image to the registry on release tags.
+
+### MCP Server (Phase 3)
+
+A TypeScript Model Context Protocol server lives in `mcp-server/`. It exposes AEON-IQ memory operations as MCP tools so any MCP-compatible AI assistant can read/write memories without direct HTTP calls.
+
+```bash
+cd mcp-server
+npm install
+npm run build
+```
+
+Key tools exposed: `retrieve_memories`, `store_memory`, `list_agents`, `get_stats`.
+
+### Client SDKs (Phase 3)
+
+`sdks/python/` — Python SDK wrapping the management API and proxy endpoint. Install with `pip install -e sdks/python`.
+
+`sdks/typescript/` — TypeScript/Node SDK. Install with `npm install` inside `sdks/typescript/`.
