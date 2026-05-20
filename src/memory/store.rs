@@ -67,6 +67,7 @@ pub async fn delete_agent(state: &AppState, agent_id: &str) -> Result<bool> {
 
 // ── Memories ──────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub async fn store_memory(
     state: &AppState,
     agent_id: &str,
@@ -158,6 +159,7 @@ pub async fn store_memory(
     Ok(id)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn store_memory_with_tier(
     state: &AppState,
     agent_id: &str,
@@ -203,6 +205,7 @@ pub async fn store_memory_with_tier(
 
 /// Basic cosine-similarity search — used internally by the proxy.
 /// Uses a CTE so the embedding vector is only bound once.
+#[allow(dead_code)]
 pub async fn search_memories(
     state: &AppState,
     agent_id: &str,
@@ -800,6 +803,7 @@ pub async fn fetch_archivable_memories(
 /// Tombstone a list of memories by setting archived_at = NOW().
 /// Originals remain in the DB for audit/lineage; they are excluded from all
 /// retrieval queries via `AND archived_at IS NULL`.
+#[allow(dead_code)]
 pub async fn tombstone_memories(state: &AppState, ids: &[Uuid]) -> Result<u64> {
     if ids.is_empty() {
         return Ok(0);

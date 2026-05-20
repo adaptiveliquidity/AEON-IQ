@@ -223,6 +223,7 @@ pub async fn handle_models(
 
 // ── OpenAI / Gemini streaming path ───────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn proxy_streaming(
     state: AppState,
     agent_id: String,
@@ -288,6 +289,7 @@ async fn proxy_streaming(
 
 // ── OpenAI / Gemini buffered path ─────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn proxy_buffered(
     state: AppState,
     agent_id: String,
@@ -343,6 +345,7 @@ async fn proxy_buffered(
 // Trade-off: first-byte latency equals full upstream latency rather than true
 // token-by-token streaming.  Acceptable for agent use cases (batch-style calls).
 
+#[allow(clippy::too_many_arguments)]
 async fn proxy_anthropic(
     state: AppState,
     agent_id: String,
