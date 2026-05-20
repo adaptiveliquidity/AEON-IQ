@@ -297,7 +297,7 @@ pub async fn get_working_memory(
     session_id: &str,
 ) -> Result<Option<WorkingMemory>> {
     let wm = sqlx::query_as::<_, WorkingMemory>(
-        "SELECT id, agent_id, session_id, summary, turn_count, updated_at
+        "SELECT id, agent_id, session_id, summary, turn_count, updated_at, state
          FROM working_memory
          WHERE agent_id = $1 AND session_id = $2",
     )
@@ -313,20 +313,27 @@ pub async fn upsert_working_memory(
     agent_id: &str,
     session_id: &str,
     summary: &str,
+    structured_state: Option<&crate::models::WorkingMemoryState>,
 ) -> Result<()> {
+    let state_json = structured_state
+        .map(|s| serde_json::to_value(s))
+        .transpose()?;
+
     sqlx::query(
         r#"
-        INSERT INTO working_memory (agent_id, session_id, summary, turn_count)
-        VALUES ($1, $2, $3, 1)
+        INSERT INTO working_memory (agent_id, session_id, summary, turn_count, state)
+        VALUES ($1, $2, $3, 1, $4)
         ON CONFLICT (agent_id, session_id) DO UPDATE
             SET summary    = EXCLUDED.summary,
                 turn_count = working_memory.turn_count + 1,
-                updated_at = NOW()
+                updated_at = NOW(),
+                state      = EXCLUDED.state
         "#,
     )
     .bind(agent_id)
     .bind(session_id)
     .bind(summary)
+    .bind(state_json)
     .execute(&state.db)
     .await?;
     Ok(())
@@ -334,30 +341,180 @@ pub async fn upsert_working_memory(
 
 // ── Entities ──────────────────────────────────────────────────────────────────
 
+/// Upsert an entity, returning its UUID.
+///
+/// Disambiguation (4.2): before inserting, check whether any existing entity
+/// for this agent has a name within Levenshtein distance ≤ 2.  If so, merge
+/// into the existing entity by using its canonical name — preventing "Alex"
+/// and "Alexander" from being stored as two separate nodes.
 pub async fn upsert_entity(
     state: &AppState,
     agent_id: &str,
     name: &str,
     entity_type: &str,
     confidence: f64,
-) -> Result<()> {
-    sqlx::query(
-        r#"
-        INSERT INTO entities (agent_id, name, entity_type, confidence)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (agent_id, name) DO UPDATE
-            SET entity_type = EXCLUDED.entity_type,
-                confidence  = EXCLUDED.confidence,
-                updated_at  = NOW()
-        "#,
+) -> Result<Uuid> {
+    // Check for a near-duplicate entity name (case-insensitive Levenshtein).
+    let similar: Option<(Uuid, String)> = sqlx::query_as(
+        r#"SELECT id, name FROM entities
+           WHERE agent_id = $1
+             AND name != $2
+             AND levenshtein(LOWER(name), LOWER($2)) <= 2
+           ORDER BY levenshtein(LOWER(name), LOWER($2)) ASC
+           LIMIT 1"#,
     )
     .bind(agent_id)
     .bind(name)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let canonical = if let Some((_, existing_name)) = similar {
+        tracing::info!(
+            agent_id = %agent_id,
+            "Entity disambiguation: '{}' merged into '{}'",
+            name, existing_name
+        );
+        existing_name
+    } else {
+        name.to_string()
+    };
+
+    let row: (Uuid,) = sqlx::query_as(
+        r#"INSERT INTO entities (agent_id, name, entity_type, confidence)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (agent_id, name) DO UPDATE
+               SET entity_type = EXCLUDED.entity_type,
+                   confidence  = EXCLUDED.confidence,
+                   updated_at  = NOW()
+           RETURNING id"#,
+    )
+    .bind(agent_id)
+    .bind(&canonical)
     .bind(entity_type)
     .bind(confidence as f32)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(row.0)
+}
+
+/// Link a memory to an entity extracted in the same turn.
+pub async fn link_memory_entity(
+    state: &AppState,
+    memory_id: Uuid,
+    entity_id: Uuid,
+    agent_id: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO memory_entity_links (memory_id, entity_id, agent_id)
+         VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(memory_id)
+    .bind(entity_id)
+    .bind(agent_id)
     .execute(&state.db)
     .await?;
     Ok(())
+}
+
+/// Return all entity names known for this agent (used for query-entity matching).
+pub async fn get_entity_names(state: &AppState, agent_id: &str) -> Result<Vec<String>> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT name FROM entities WHERE agent_id = $1 ORDER BY name")
+            .bind(agent_id)
+            .fetch_all(&state.db)
+            .await?;
+    Ok(rows.into_iter().map(|(n,)| n).collect())
+}
+
+/// Walk the knowledge graph one hop: given a set of matched entity names,
+/// return all entity names that appear on the other side of any relation.
+pub async fn walk_graph_for_entities(
+    state: &AppState,
+    agent_id: &str,
+    entity_names: &[String],
+) -> Result<Vec<String>> {
+    if entity_names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let lower_names: Vec<String> = entity_names.iter().map(|n| n.to_lowercase()).collect();
+
+    // Two-direction UNION: object side of matching subjects + subject side of matching objects
+    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
+        "SELECT DISTINCT subject AS name FROM memory_graph WHERE agent_id = ",
+    );
+    qb.push_bind(agent_id);
+    qb.push(" AND LOWER(object) IN (");
+    let mut sep = qb.separated(", ");
+    for n in &lower_names {
+        sep.push_bind(n);
+    }
+    qb.push(") UNION SELECT DISTINCT object AS name FROM memory_graph WHERE agent_id = ");
+    qb.push_bind(agent_id);
+    qb.push(" AND LOWER(subject) IN (");
+    let mut sep2 = qb.separated(", ");
+    for n in &lower_names {
+        sep2.push_bind(n);
+    }
+    qb.push(")");
+
+    let rows: Vec<(String,)> = qb.build_query_as().fetch_all(&state.db).await?;
+    let matched: std::collections::HashSet<String> = lower_names.into_iter().collect();
+    Ok(rows
+        .into_iter()
+        .map(|(n,)| n)
+        .filter(|n| !matched.contains(&n.to_lowercase()))
+        .collect())
+}
+
+/// Fetch live memories linked to any of the given entity names via the
+/// `memory_entity_links` join table, excluding already-retrieved IDs.
+pub async fn get_memories_for_entities(
+    state: &AppState,
+    agent_id: &str,
+    entity_names: &[String],
+    exclude_ids: &[Uuid],
+    limit: i64,
+) -> Result<Vec<Memory>> {
+    if entity_names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let lower_names: Vec<String> = entity_names.iter().map(|n| n.to_lowercase()).collect();
+
+    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
+        r#"SELECT DISTINCT m.id, m.agent_id, m.session_id, m.content, m.memory_type,
+                  m.confidence, m.provenance, m.created_at, m.source_turn,
+                  m.importance_score, m.importance_source
+           FROM memories m
+           JOIN memory_entity_links mel ON m.id = mel.memory_id
+           JOIN entities e ON mel.entity_id = e.id
+           WHERE m.agent_id = "#,
+    );
+    qb.push_bind(agent_id);
+    qb.push(" AND m.archived_at IS NULL AND LOWER(e.name) IN (");
+    let mut sep = qb.separated(", ");
+    for n in &lower_names {
+        sep.push_bind(n);
+    }
+    qb.push(")");
+
+    if !exclude_ids.is_empty() {
+        qb.push(" AND m.id NOT IN (");
+        let mut sep2 = qb.separated(", ");
+        for id in exclude_ids {
+            sep2.push_bind(*id);
+        }
+        qb.push(")");
+    }
+
+    qb.push(" ORDER BY m.importance_score DESC, m.created_at DESC LIMIT ");
+    qb.push_bind(limit);
+
+    qb.build_query_as::<Memory>()
+        .fetch_all(&state.db)
+        .await
+        .map_err(Into::into)
 }
 
 // ── Relations / Knowledge Graph ───────────────────────────────────────────────
@@ -669,6 +826,7 @@ mod tests {
                 upstream_provider: "openai".into(),
                 rate_limit_rpm: 0,
                 rate_limit_burst: 20,
+                graph_retrieval_enabled: false,
             }),
             db: pool,
             http_client: reqwest::Client::new(),

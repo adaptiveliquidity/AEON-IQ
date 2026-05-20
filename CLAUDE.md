@@ -48,7 +48,7 @@ OPENAI_API_KEY=sk-... python test_memory.py   # requires running kernel on :8080
 Every `POST /v1/chat/completions` goes through `src/proxy.rs`:
 
 1. **Auth & rate limit** — extract `x-agent-id` (required), `x-session-id` (auto-generated if absent); check per-agent token bucket (`src/rate_limit.rs`)
-2. **Memory retrieval** — embed the last user message; `search_memories_filtered` runs a two-CTE pgvector query; inject results as a `<retrieved_memories>` system message at position 0
+2. **Memory retrieval** — embed the last user message; `search_memories_filtered` runs a two-CTE pgvector query; when `GRAPH_RETRIEVAL_ENABLED=true`, a one-hop graph walk augments the vector results (entity name match → `memory_graph` relations → `memory_entity_links` fetch); inject results as a `<retrieved_memories>` system message at position 0
 3. **Forward upstream** — translate request format via `Provider::build_request`, add any provider-specific headers
 4. **Tee response** — for OpenAI/Gemini: stream chunks to client while capturing the full body; for Anthropic: buffer entirely (Anthropic's wire format differs), then re-emit as synthetic OpenAI SSE/JSON so callers using the OpenAI SDK need zero changes
 5. **Background extraction** — `tokio::spawn(extract_and_store(...))`: calls the extractor LLM to pull structured facts, batch-embeds them in one API call, stores to Postgres
@@ -57,9 +57,15 @@ Every `POST /v1/chat/completions` goes through `src/proxy.rs`:
 
 | Tier | Table | Description |
 |------|-------|-------------|
-| L1 | `working_memory` | Per-session rolling summary; updated every turn |
+| L1 | `working_memory` | Per-session rolling summary + structured state (JSONB); updated every turn |
 | L2 | `memories` (tier='L2') | Individual extracted facts; default tier |
 | L3 | `memories` (tier='L3') | Compressed archival facts; confidence capped at 0.7 |
+
+L1 structured state (`working_memory.state` JSONB, added Phase 4.3):
+```json
+{ "summary": "...", "active_entities": ["NovaPay"], "current_goal": "...", "open_questions": ["..."] }
+```
+When present, `build_injection` renders each field as a labelled section (`[ACTIVE_ENTITIES]`, `[CURRENT_GOAL]`, `[OPEN_QUESTIONS]`) instead of a single `[SESSION_SUMMARY]` block. The plain `summary` column is kept for backward compatibility.
 
 Archival job (`src/archival.rs`) runs on `ARCHIVAL_INTERVAL_HOURS` schedule: compacts stale zero-access L2 facts into L3 via LLM compression, then tombstones (sets `archived_at = NOW()`) originals. All queries filter `AND archived_at IS NULL` — nothing is hard-deleted.
 
@@ -138,6 +144,7 @@ Migrations run automatically at startup via `sqlx::migrate!("./migrations")`. Th
 | `RATE_LIMIT_RPM` | `0` | Per-agent request cap; 0 = disabled |
 | `MANAGEMENT_API_KEY` | unset | Unauthenticated if unset |
 | `EMBEDDING_DIMENSION` | `1536` | Must match `vector(N)` in schema |
+| `GRAPH_RETRIEVAL_ENABLED` | `false` | Enable graph-walk augmentation during retrieval (Phase 4.1) |
 
 To switch embedding model to bge-small (384 dims): change `EMBEDDING_MODEL`, `EMBEDDING_DIMENSION=384`, and update `vector(1536)` → `vector(384)` in `migrations/0001_initial.sql`.
 
@@ -174,3 +181,11 @@ AppState {
 ### Observability
 
 Prometheus metrics at `GET /metrics` (text format 0.0.4). Key counters/histograms: `memoryos_requests_total`, `memoryos_extraction_total{status=ok|error|low_confidence}`, `memoryos_injection_total{result=hit|miss}`, `memoryos_rate_limited_total`. Grafana dashboard provisioned via `docker/grafana/provisioning/`.
+
+### Knowledge graph (Phase 4)
+
+`entities` and `memory_graph` tables store named entities and subject-predicate-object triples extracted by the MMU. Phase 4 additions:
+
+- **`memory_entity_links`** (migration 0007) — join table mapping `memory_id → entity_id`. Populated by `extraction.rs` after each turn: every stored memory is linked to every entity extracted in the same turn.
+- **Graph-walk retrieval** (`GRAPH_RETRIEVAL_ENABLED=true`) — `retrieve_relevant` matches entity names from the query against `entities`, walks `memory_graph` one hop, then fetches memories linked to those related entities via `memory_entity_links`. Results are merged after the primary vector set.
+- **Entity disambiguation** (migration 0008, `fuzzystrmatch`) — `upsert_entity` checks `levenshtein(LOWER(name), LOWER(new)) <= 2` before inserting. Near-duplicates (e.g. "Alex" / "Alexander") are merged into the canonical (existing) entity name.

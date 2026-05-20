@@ -34,6 +34,9 @@ Required output schema:
   "entities": [{"name": "NovaPay", "type": "company", "confidence": 0.95}],
   "relations": [{"subject": "alex", "predicate": "founded", "object": "NovaPay"}],
   "updated_summary": "Concise executive summary, max 200 tokens.",
+  "active_entities": ["NovaPay", "Stripe API"],
+  "current_goal": "Debug the webhook handler",
+  "open_questions": ["Which auth method to use?"],
   "memory_type": "episodic",
   "confidence_low": false
 }
@@ -59,7 +62,14 @@ IMPORTANCE SCORING RULES (strictly follow):
 - 0.5–0.79 = Standard episodic detail or preference
 - 0.0–0.49 = Trivial / conversational filler / small talk
 Recognise <important>…</important> in [assistant] lines as a hard signal for score >= 0.9.
-importance_source must be "extractor" (set automatically; may be overridden server-side)."#;
+importance_source must be "extractor" (set automatically; may be overridden server-side).
+
+STRUCTURED SESSION STATE (always include):
+- active_entities: list of entity names actively referenced in THIS conversation window (max 10).
+- current_goal: single sentence describing what the user/agent is trying to accomplish right now.
+  Omit (null) if no clear goal is discernible.
+- open_questions: list of unresolved questions or ambiguities from this session (max 5).
+  Empty array [] if none."#;
 
 /// Entry point called from `tokio::spawn`. Logs errors, never panics.
 pub async fn extract_and_store(
@@ -174,6 +184,7 @@ async fn run_extraction(
     //
     // Issue 4 fix: assistant_derived and inferred facts are stored with
     // a lower confidence cap so they don't dominate future retrievals.
+    let mut memory_ids: Vec<uuid::Uuid> = Vec::new();
     if !extraction.facts.is_empty() {
         let texts: Vec<&str> = extraction.facts.iter().map(|f| f.content.as_str()).collect();
         let has_agent_tag = assistant_content.contains("<important>");
@@ -199,7 +210,7 @@ async fn run_extraction(
                         state.metrics.high_importance_total.inc();
                     }
 
-                    if let Err(e) = store::store_memory(
+                    match store::store_memory(
                         state,
                         agent_id,
                         Some(session_id),
@@ -214,7 +225,8 @@ async fn run_extraction(
                     )
                     .await
                     {
-                        warn!(agent_id = %agent_id, "Failed to store fact: {}", e);
+                        Ok(id) => memory_ids.push(id),
+                        Err(e) => warn!(agent_id = %agent_id, "Failed to store fact: {}", e),
                     }
                 }
             }
@@ -222,13 +234,25 @@ async fn run_extraction(
         }
     }
 
+    // ── Upsert entities and build entity-memory links ─────────────────────────
+    let mut entity_ids: Vec<uuid::Uuid> = Vec::new();
     for entity in &extraction.entities {
-        if let Err(e) = store::upsert_entity(
+        match store::upsert_entity(
             state, agent_id, &entity.name, &entity.entity_type, entity.confidence,
         )
         .await
         {
-            warn!(agent_id = %agent_id, "Failed to store entity: {}", e);
+            Ok(id) => entity_ids.push(id),
+            Err(e) => warn!(agent_id = %agent_id, "Failed to store entity: {}", e),
+        }
+    }
+
+    // Link each memory stored in this turn to each entity extracted in this turn.
+    for &mid in &memory_ids {
+        for &eid in &entity_ids {
+            if let Err(e) = store::link_memory_entity(state, mid, eid, agent_id).await {
+                warn!(agent_id = %agent_id, "Failed to link memory to entity: {}", e);
+            }
         }
     }
 
@@ -242,9 +266,20 @@ async fn run_extraction(
         }
     }
 
-    if let Err(e) =
-        store::upsert_working_memory(state, agent_id, session_id, &extraction.updated_summary)
-            .await
+    let structured_state = crate::models::WorkingMemoryState {
+        summary: extraction.updated_summary.clone(),
+        active_entities: extraction.active_entities.clone(),
+        current_goal: extraction.current_goal.clone(),
+        open_questions: extraction.open_questions.clone(),
+    };
+    if let Err(e) = store::upsert_working_memory(
+        state,
+        agent_id,
+        session_id,
+        &extraction.updated_summary,
+        Some(&structured_state),
+    )
+    .await
     {
         warn!(agent_id = %agent_id, "Failed to update working memory: {}", e);
     }

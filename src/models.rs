@@ -149,6 +149,21 @@ pub struct WorkingMemory {
     pub summary: Option<String>,
     pub turn_count: i32,
     pub updated_at: DateTime<Utc>,
+    /// Structured session state added in Phase 4.3.  Absent on rows created
+    /// before the migration; plain `summary` is used as fallback.
+    pub state: Option<serde_json::Value>,
+}
+
+/// Structured L1 session state stored as JSONB in `working_memory.state`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WorkingMemoryState {
+    pub summary: String,
+    #[serde(default)]
+    pub active_entities: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_goal: Option<String>,
+    #[serde(default)]
+    pub open_questions: Vec<String>,
 }
 
 /// A row from the `memory_graph` table (subject–predicate–object triple).
@@ -190,6 +205,14 @@ pub struct ExtractionResult {
     pub updated_summary: String,
     pub memory_type: String,
     pub confidence_low: bool,
+    /// Entities actively mentioned in the current session window (4.3).
+    #[serde(default)]
+    pub active_entities: Vec<String>,
+    /// The agent's current top-level goal inferred from the session (4.3).
+    pub current_goal: Option<String>,
+    /// Open questions or unresolved topics in the session (4.3).
+    #[serde(default)]
+    pub open_questions: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

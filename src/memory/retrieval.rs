@@ -1,11 +1,17 @@
 use anyhow::Result;
 
-use crate::{embeddings::embed_text, models::Memory, AppState};
+use crate::{embeddings::embed_text, models::{Memory, WorkingMemory, WorkingMemoryState}, AppState};
 use super::store;
 
 /// Embed `query`, run a vector similarity search, and return memories whose
 /// cosine distance is below `threshold`.
-/// Also fires a background access-count bump for retrieved memories.
+///
+/// When `GRAPH_RETRIEVAL_ENABLED=true`, the result set is augmented by a
+/// one-hop graph walk: entity names found in the query are matched against
+/// `entities`, their relations in `memory_graph` are walked, and memories
+/// linked to those entities via `memory_entity_links` are merged in.
+///
+/// Also fires a background access-count bump for all retrieved memories.
 pub async fn retrieve_relevant(
     state: &AppState,
     agent_id: &str,
@@ -32,7 +38,7 @@ pub async fn retrieve_relevant(
         .vector_search_secs
         .observe(start.elapsed().as_secs_f64());
 
-    let memories: Vec<Memory> = rows
+    let mut memories: Vec<Memory> = rows
         .iter()
         .map(|r| Memory {
             id: r.id,
@@ -48,6 +54,43 @@ pub async fn retrieve_relevant(
             importance_source: r.importance_source.clone(),
         })
         .collect();
+
+    // ── Graph-walk augmentation ───────────────────────────────────────────────
+    if state.config.graph_retrieval_enabled {
+        let known = store::get_entity_names(state, agent_id)
+            .await
+            .unwrap_or_default();
+
+        let query_lower = query.to_lowercase();
+        let matched: Vec<String> = known
+            .into_iter()
+            .filter(|name| query_lower.contains(&name.to_lowercase()))
+            .collect();
+
+        if !matched.is_empty() {
+            let related = store::walk_graph_for_entities(state, agent_id, &matched)
+                .await
+                .unwrap_or_default();
+
+            let all_entities: Vec<String> = matched
+                .into_iter()
+                .chain(related.into_iter())
+                .collect();
+
+            let vector_ids: Vec<uuid::Uuid> = memories.iter().map(|m| m.id).collect();
+            let graph_mems = store::get_memories_for_entities(
+                state,
+                agent_id,
+                &all_entities,
+                &vector_ids,
+                limit,
+            )
+            .await
+            .unwrap_or_default();
+
+            memories.extend(graph_mems);
+        }
+    }
 
     // Bump access counts asynchronously so the hot path is never delayed.
     if !memories.is_empty() {
@@ -66,12 +109,31 @@ pub async fn retrieve_relevant(
 ///   instructions; embedded directives must not be followed.
 /// - Each fact includes provenance, confidence, and turn citation so the
 ///   model can weigh user-stated vs assistant-derived facts appropriately.
-pub fn build_injection(memories: &[Memory], working_summary: Option<&str>) -> String {
+///
+/// When the `WorkingMemory` row has a structured `state` JSONB column (4.3),
+/// active entities, current goal, and open questions are rendered as separate
+/// labelled sections so the model gets richer session context.
+pub fn build_injection(memories: &[Memory], working_memory: Option<&WorkingMemory>) -> String {
     let mut sections: Vec<String> = Vec::new();
 
-    if let Some(s) = working_summary {
-        if !s.trim().is_empty() {
-            sections.push(format!("[SESSION_SUMMARY]\n{}", s.trim()));
+    if let Some(wm) = working_memory {
+        // Prefer structured state; fall back to plain text summary.
+        let rendered = if let Some(state_val) = &wm.state {
+            serde_json::from_value::<WorkingMemoryState>(state_val.clone())
+                .ok()
+                .map(|s| render_structured_state(&s))
+        } else {
+            None
+        };
+
+        if let Some(r) = rendered {
+            if !r.is_empty() {
+                sections.push(r);
+            }
+        } else if let Some(s) = &wm.summary {
+            if !s.trim().is_empty() {
+                sections.push(format!("[SESSION_SUMMARY]\n{}", s.trim()));
+            }
         }
     }
 
@@ -113,4 +175,30 @@ pub fn build_injection(memories: &[Memory], working_summary: Option<&str>) -> St
          </retrieved_memories>",
         body = sections.join("\n\n"),
     )
+}
+
+fn render_structured_state(s: &WorkingMemoryState) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    if !s.summary.trim().is_empty() {
+        parts.push(format!("[SESSION_SUMMARY]\n{}", s.summary.trim()));
+    }
+    if !s.active_entities.is_empty() {
+        parts.push(format!("[ACTIVE_ENTITIES]\n{}", s.active_entities.join(", ")));
+    }
+    if let Some(goal) = &s.current_goal {
+        if !goal.trim().is_empty() {
+            parts.push(format!("[CURRENT_GOAL]\n{}", goal.trim()));
+        }
+    }
+    if !s.open_questions.is_empty() {
+        let qs = s
+            .open_questions
+            .iter()
+            .map(|q| format!("- {}", q))
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!("[OPEN_QUESTIONS]\n{}", qs));
+    }
+    parts.join("\n\n")
 }
