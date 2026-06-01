@@ -10,6 +10,7 @@ mod models;
 mod providers;
 mod proxy;
 mod rate_limit;
+mod rmk_worker;
 
 use std::sync::Arc;
 
@@ -98,6 +99,13 @@ async fn main() -> anyhow::Result<()> {
     // ── Background jobs ───────────────────────────────────────────────────────
     if config.archival_interval_hours > 0 {
         tokio::spawn(archival::run_job(state.clone()));
+    }
+    if config.rmk_config.enabled {
+        tokio::spawn(rmk_worker::run_policy_update_job(state.clone()));
+        tokio::spawn(rmk_worker::run_co_access_decay_job(state.clone()));
+    } else if config.amp_config.enabled {
+        // AMP co-access decay runs even without RMK
+        tokio::spawn(rmk_worker::run_co_access_decay_job(state.clone()));
     }
 
     // ── Management sub-router (authenticated) ─────────────────────────────────
