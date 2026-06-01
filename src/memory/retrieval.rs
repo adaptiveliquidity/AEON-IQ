@@ -1,7 +1,9 @@
 use anyhow::Result;
+use sha2::{Digest, Sha256};
 
 use crate::{
     embeddings::embed_text,
+    memory::rmk::policy::PolicyParams,
     models::{Memory, MemorySearchRow, WorkingMemory, WorkingMemoryState},
     AppState,
 };
@@ -15,13 +17,19 @@ use super::store;
 /// `entities`, their relations in `memory_graph` are walked, and memories
 /// linked to those entities via `memory_entity_links` are merged in.
 ///
+/// When `policy` is `Some` and RMK is enabled, the agent's learned policy
+/// overrides the static AMP config for this request (pressure coefficients,
+/// PI gains, co-access bonus weight).
+///
 /// Also fires a background access-count bump for all retrieved memories.
 pub async fn retrieve_relevant(
     state: &AppState,
     agent_id: &str,
+    session_id: &str,
     query: &str,
     limit: i64,
     threshold: f64,
+    policy: Option<&PolicyParams>,
 ) -> Result<Vec<Memory>> {
     let start = std::time::Instant::now();
 
@@ -48,19 +56,36 @@ pub async fn retrieve_relevant(
     // neighbour_weight_sum`, promoting memories that frequently appear
     // alongside other recently retrieved memories.  The rows are then
     // re-sorted by the adjusted distance.
+    //
+    // When a learned RMK policy is provided, its 5 non-threshold dimensions
+    // override the static AMP config structs for this request only.
     let rows: Vec<MemorySearchRow> =
         if (state.config.amp_config.enabled || state.config.rmk_config.enabled)
             && !raw_rows.is_empty()
         {
+            // Clone per-request copies of the AMP structs so global state is
+            // never mutated; apply learned overrides from the policy if present.
+            let mut pressure_params = state.config.amp_config.pressure_params.clone();
+            let mut controller_params = state.config.amp_config.controller_params.clone();
+            let mut co_access_params = state.config.amp_config.co_access_params.clone();
+            let mut _local_threshold = threshold;
+            if let Some(pol) = policy {
+                crate::memory::rmk::adapter::RmkAdapter::apply(
+                    pol,
+                    &mut pressure_params,
+                    &mut controller_params,
+                    &mut co_access_params,
+                    &mut _local_threshold,
+                );
+            }
+
             let augmenter = crate::memory::amp::augmenter::RetrievalAugmenter::new(
-                crate::memory::amp::pressure::PressureManager::new(
-                    state.config.amp_config.pressure_params.clone(),
-                ),
+                crate::memory::amp::pressure::PressureManager::new(pressure_params),
                 crate::memory::amp::co_access::CoAccessGraph::new(
                     state.db.clone(),
-                    state.config.amp_config.co_access_params.clone(),
+                    co_access_params.clone(),
                 ),
-                state.config.amp_config.co_access_params.graph_bonus_weight,
+                co_access_params.graph_bonus_weight,
             );
 
             let pairs: Vec<(uuid::Uuid, f64)> = raw_rows
@@ -97,6 +122,14 @@ pub async fn retrieve_relevant(
             source_turn: r.source_turn,
             importance_score: r.importance_score,
             importance_source: r.importance_source.clone(),
+            // New fields from migration 0019 — not included in MemorySearchRow;
+            // defaults are safe here since these fields don't affect injection content.
+            status: "active".to_string(),
+            sensitivity: "unknown".to_string(),
+            valid_from: None,
+            valid_to: None,
+            suppression_reason: None,
+            status_updated_at: None,
         })
         .collect();
 
@@ -138,9 +171,21 @@ pub async fn retrieve_relevant(
     }
 
     // Bump access counts asynchronously so the hot path is never delayed.
+    // When AMP or RMK is active, also update utility_ema in a single batch SQL
+    // statement: feedback=1.0 means "this memory was retrieved and injected".
     if !memories.is_empty() {
         let ids: Vec<uuid::Uuid> = memories.iter().map(|m| m.id).collect();
-        tokio::spawn(store::bump_access_counts(state.clone(), ids));
+        let amp_active = state.config.amp_config.enabled || state.config.rmk_config.enabled;
+        let alpha = state.config.amp_config.feedback_ema_alpha;
+        let pool = state.db.clone();
+        let state_for_bump = state.clone();
+        let ids_for_ema = ids.clone();
+        tokio::spawn(async move {
+            store::bump_access_counts(state_for_bump, ids).await;
+            if amp_active {
+                store::update_utility_emas(&pool, &ids_for_ema, alpha).await;
+            }
+        });
     }
 
     // Record pairwise co-access edges when AMP or RMK is active.
@@ -156,6 +201,61 @@ pub async fn retrieve_relevant(
                         tracing::warn!("co-access record failed: {}", e);
                     }
                 }
+            }
+        });
+    }
+
+    // Fire-and-forget retrieval log.  Failures are silently ignored so the
+    // hot path is never blocked by a logging failure.
+    {
+        let latency_ms = start.elapsed().as_millis() as i32;
+        let memory_ids: Vec<uuid::Uuid> = memories.iter().map(|m| m.id).collect();
+        let query_hash = hex::encode(Sha256::digest(query.as_bytes()));
+        let query_text_stored = if state.config.retrieval_log_query_text {
+            Some(query.to_string())
+        } else {
+            None
+        };
+        // Build per-memory score JSON.
+        let scores: serde_json::Value = serde_json::Value::Object(
+            rows.iter()
+                .map(|r| {
+                    (
+                        r.id.to_string(),
+                        serde_json::json!({
+                            "cosine_dist": r.distance.unwrap_or(1.0),
+                            "importance_score": r.importance_score,
+                            "confidence": r.confidence,
+                        }),
+                    )
+                })
+                .collect(),
+        );
+        let db = state.db.clone();
+        let agent_id_log = agent_id.to_string();
+        let session_id_log = session_id.to_string();
+        tokio::spawn(async move {
+            let result = sqlx::query(
+                r#"
+                INSERT INTO memory_retrieval_logs
+                    (agent_id, session_id, query_text, query_hash,
+                     candidate_memory_ids, injected_memory_ids, suppressed_memory_ids,
+                     scores, latency_ms)
+                VALUES ($1, $2, $3, $4, $5, $6, '{}', $7, $8)
+                "#,
+            )
+            .bind(&agent_id_log)
+            .bind(&session_id_log)
+            .bind(&query_text_stored)
+            .bind(&query_hash)
+            .bind(&memory_ids)
+            .bind(&memory_ids) // injected = same as candidate at this layer
+            .bind(&scores)
+            .bind(latency_ms)
+            .execute(&db)
+            .await;
+            if let Err(e) = result {
+                tracing::warn!("retrieval log insert failed: {}", e);
             }
         });
     }

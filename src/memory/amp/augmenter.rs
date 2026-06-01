@@ -38,23 +38,31 @@ impl RetrievalAugmenter {
     /// (lower = more similar).  The co-access bonus is subtracted so that
     /// memories with strong graph connections are ranked higher.
     ///
-    /// `_candidate_ids` is reserved for the pressure-filtering pass (Phase 2).
+    /// All neighbour-weight lookups are batched into a single SQL query
+    /// instead of N individual round-trips.
     pub async fn augment_scores(
         &self,
-        _candidate_ids: Vec<Uuid>,
+        candidate_ids: Vec<Uuid>,
         similarities: &[(Uuid, f64)],
     ) -> Vec<(Uuid, f64)> {
         if self.graph_bonus_weight <= 0.0 {
             return similarities.to_vec();
         }
 
-        let mut result = Vec::with_capacity(similarities.len());
-        for &(id, dist) in similarities {
-            let bonus = self.co_access_graph.get_neighbor_weight_sum(id).await
-                * self.graph_bonus_weight;
-            // Clamp to 0 so we never invert the distance ordering.
-            result.push((id, (dist - bonus).max(0.0)));
-        }
-        result
+        // Single batch query for all candidate IDs.
+        let weight_sums = self
+            .co_access_graph
+            .get_neighbor_weight_sums(&candidate_ids)
+            .await;
+
+        similarities
+            .iter()
+            .map(|&(id, dist)| {
+                let bonus = weight_sums.get(&id).copied().unwrap_or(0.0)
+                    * self.graph_bonus_weight;
+                // Clamp to 0 so we never invert the distance ordering.
+                (id, (dist - bonus).max(0.0))
+            })
+            .collect()
     }
 }

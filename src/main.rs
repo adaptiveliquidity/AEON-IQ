@@ -117,9 +117,11 @@ async fn main() -> anyhow::Result<()> {
     if config.rmk_config.enabled {
         tokio::spawn(rmk_worker::run_policy_update_job(state.clone()));
         tokio::spawn(rmk_worker::run_co_access_decay_job(state.clone()));
+        tokio::spawn(rmk_worker::run_pressure_sweep_job(state.clone()));
     } else if config.amp_config.enabled {
-        // AMP co-access decay runs even without RMK
+        // AMP co-access decay and pressure sweep run even without RMK.
         tokio::spawn(rmk_worker::run_co_access_decay_job(state.clone()));
+        tokio::spawn(rmk_worker::run_pressure_sweep_job(state.clone()));
     }
 
     // ── Management sub-router (authenticated) ─────────────────────────────────
@@ -137,14 +139,19 @@ async fn main() -> anyhow::Result<()> {
         .route("/agents/:agent_id/sessions",                    get(api::list_sessions))
         .route("/agents/:agent_id/sessions/:session_id",        get(api::get_session))
         .route("/agents/:agent_id/sessions/:session_id",        delete(api::delete_session))
+        .route("/agents/:agent_id/retrievals",                  get(api::list_retrievals))
         .route("/agents/:agent_id/conflicts",                   get(api::list_conflicts))
         .route("/conflicts/:conflict_id/resolve",               post(api::resolve_conflict))
         .route("/memories/search",                              post(api::search_memories_semantic))
         .route("/memories/:id",                                 patch(api::patch_memory))
         .route("/memories/:id",                                 delete(api::delete_memory))
         .route("/memories/:id/restore",                         post(api::restore_memory))
+        .route("/memories/:id/versions",                        get(api::list_memory_versions))
+        .route("/memories/:id/status",                          patch(api::patch_memory_status))
+        .route("/memories/:id/sensitivity",                     patch(api::patch_memory_sensitivity))
         .route("/archival/batches/:batch_id/restore",           post(api::restore_archival_batch))
         .route("/stats",                                        get(api::get_stats))
+        .route("/feedback",                                     post(api::post_feedback))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::check_management_key,

@@ -17,6 +17,7 @@ use crate::{
         extraction::extract_and_store,
         retrieval::{build_injection, retrieve_relevant},
         rmk::{
+            policy::PolicyParams,
             reward::{EpisodeMetrics, RewardModel},
             store as rmk_store,
         },
@@ -90,24 +91,32 @@ pub async fn handle_chat_completions(
 
     // When RMK is enabled, override the static retrieval threshold with the
     // agent's current learned policy and capture the policy ID for episode logging.
-    let (effective_threshold, rmk_policy_id): (f64, Option<Uuid>) =
+    // The full PolicyParams are kept so all 6 θ dimensions are applied during retrieval.
+    let (effective_threshold, rmk_policy_id, rmk_policy_params): (f64, Option<Uuid>, Option<PolicyParams>) =
         if state.config.rmk_config.enabled {
             match rmk_store::get_latest_policy(&state.db, &agent_id).await {
-                Ok(Some((pid, policy))) => (policy.retrieval_threshold, Some(pid)),
-                _ => (state.config.retrieval_threshold, None),
+                Ok(Some((pid, policy))) => {
+                    let threshold = policy.retrieval_threshold;
+                    (threshold, Some(pid), Some(policy))
+                }
+                _ => (state.config.retrieval_threshold, None, None),
             }
         } else {
-            (state.config.retrieval_threshold, None)
+            (state.config.retrieval_threshold, None, None)
         };
 
     let mut memories_retrieved: usize = 0;
+    let mut injected_chars: usize = 0;
+    let total_prompt_chars: usize = chat_req.messages.iter().map(|m| m.content_text().len()).sum();
     if !user_message.is_empty() {
         match retrieve_relevant(
             &state,
             &agent_id,
+            &session_id,
             &user_message,
             5,
             effective_threshold,
+            rmk_policy_params.as_ref(),
         )
         .await
         {
@@ -121,6 +130,7 @@ pub async fn handle_chat_completions(
                     let injection = build_injection(&memories, wm.as_ref());
 
                     if !injection.is_empty() {
+                        injected_chars = injection.len();
                         info!(agent_id = %agent_id, count = memories_retrieved, "Injecting memories");
                         chat_req.messages.insert(
                             0,
@@ -186,6 +196,8 @@ pub async fn handle_chat_completions(
             agent_id.clone(),
             rmk_policy_id,
             memories_retrieved,
+            injected_chars,
+            total_prompt_chars,
         ))
     } else {
         None
@@ -221,16 +233,42 @@ pub async fn handle_chat_completions(
     };
 
     // ── 7. Log RMK episode (background, fire-and-forget) ─────────────────────
-    if let Some((db, cfg, aid, policy_id, mem_count)) = rmk_log {
+    if let Some((db, cfg, aid, policy_id, mem_count, inj_chars, prompt_chars)) = rmk_log {
         tokio::spawn(async move {
             const RETRIEVAL_LIMIT: f64 = 5.0;
-            let precision = mem_count as f64 / RETRIEVAL_LIMIT;
-            let token_savings = if mem_count > 0 { 0.5_f64 } else { 0.0_f64 };
+            let precision = (mem_count as f64 / RETRIEVAL_LIMIT).min(1.0);
+
+            // Estimate token savings as the fraction of the total prompt that came
+            // from injected memories (chars/4 ≈ tokens).
+            let token_savings = if prompt_chars > 0 && inj_chars > 0 {
+                (inj_chars as f64 / (prompt_chars + inj_chars) as f64).min(1.0)
+            } else {
+                0.0
+            };
+
+            // Query the real eviction cost: fraction of active memories that are
+            // currently soft-evicted for this agent.
+            let eviction_cost: f64 = sqlx::query_scalar(
+                "SELECT COALESCE(
+                    SUM(CASE WHEN soft_evicted THEN 1 ELSE 0 END)::double precision /
+                    NULLIF(COUNT(*), 0),
+                    0.0
+                 )
+                 FROM memories
+                 WHERE agent_id = $1 AND archived_at IS NULL",
+            )
+            .bind(&aid)
+            .fetch_one(&db)
+            .await
+            .unwrap_or(0.0);
+
             let metrics = EpisodeMetrics {
-                task_success: 1.0, // optimistic proxy; real signal from user feedback TBD
+                // task_success stays 1.0 (proxy can't observe task outcome);
+                // real signal should come from the /feedback endpoint in the future.
+                task_success: 1.0,
                 token_savings,
                 retrieval_precision: precision,
-                eviction_cost: 0.0,
+                eviction_cost,
             };
             let reward = RewardModel::new(cfg.rmk_config.reward_weights.clone())
                 .compute_reward(&metrics);

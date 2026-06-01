@@ -8,13 +8,12 @@
 //! Components:
 //! * `policy`        — the tunable parameter vector θ
 //! * `reward`        — episode metrics → scalar reward
-//! * `buffer`        — fixed-capacity in-memory episode ring-buffer
 //! * `meta_learner`  — contextual bandit stub (→ PPO in v2)
 //! * `adapter`       — applies θ to AMP config structs
 //! * `config`        — top-level RMK configuration
+//! * `store`         — DB CRUD for rmk_policies and rmk_episodes
 
 pub mod adapter;
-pub mod buffer;
 pub mod config;
 pub mod meta_learner;
 pub mod policy;

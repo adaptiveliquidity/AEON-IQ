@@ -63,6 +63,10 @@ rand = "0.8"
 # Constant-time comparisons (prevent timing side-channels in auth)
 subtle = "2"
 
+# SHA-256 for query hashing in retrieval logs
+sha2 = "0.10"
+hex  = "0.4"
+
 [dev-dependencies]
 # No extra crates needed: sqlx's #[sqlx::test] is enabled by the `migrate`
 # feature already declared in [dependencies], and tokio is already full-featured.

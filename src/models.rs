@@ -96,6 +96,21 @@ pub struct Memory {
     pub source_turn: Option<i32>,
     pub importance_score: f32,
     pub importance_source: String,
+    /// Lifecycle status: active | candidate | quarantined | suppressed.
+    /// `#[sqlx(default)]` allows queries that don't SELECT this column to
+    /// succeed; the Rust default ("") is safe — only the DB value matters.
+    #[sqlx(default)]
+    pub status: String,
+    #[sqlx(default)]
+    pub sensitivity: String,
+    #[sqlx(default)]
+    pub valid_from: Option<DateTime<Utc>>,
+    #[sqlx(default)]
+    pub valid_to: Option<DateTime<Utc>>,
+    #[sqlx(default)]
+    pub suppression_reason: Option<String>,
+    #[sqlx(default)]
+    pub status_updated_at: Option<DateTime<Utc>>,
 }
 
 /// A memory row for export — includes `tier` (omitted from `Memory` for live queries).

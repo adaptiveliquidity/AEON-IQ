@@ -88,6 +88,12 @@ pub struct Config {
     /// contradictions against the top-k most similar existing memories.
     pub conflict_detection_enabled: bool,
 
+    // ── Retrieval logging ─────────────────────────────────────────────────────
+    /// When false (default), only the SHA-256 hash of the query text is stored
+    /// in memory_retrieval_logs (privacy-safe).  Set to true to also store the
+    /// raw query_text (useful for debugging retrieval quality).
+    pub retrieval_log_query_text: bool,
+
     // ── Adaptive Memory Pressure ──────────────────────────────────────────────
     /// AMP is disabled by default.  Set `AMP_ENABLED=true` to activate.
     pub amp_config: AmpConfig,
@@ -202,6 +208,10 @@ impl Config {
                 .parse()
                 .context("DEDUP_THRESHOLD must be a float")?,
             conflict_detection_enabled: std::env::var("CONFLICT_DETECTION_ENABLED")
+                .unwrap_or_else(|_| "false".to_string())
+                .eq_ignore_ascii_case("true"),
+
+            retrieval_log_query_text: std::env::var("RETRIEVAL_LOG_QUERY_TEXT")
                 .unwrap_or_else(|_| "false".to_string())
                 .eq_ignore_ascii_case("true"),
 
