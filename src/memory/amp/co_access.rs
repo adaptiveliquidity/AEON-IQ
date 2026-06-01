@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -81,5 +83,49 @@ impl CoAccessGraph {
 
         // Cap the bonus contribution
         sum.min(self.params.max_bonus / self.params.graph_bonus_weight.max(f64::EPSILON))
+    }
+
+    /// Batch version: returns the capped neighbour-weight sum for every ID
+    /// in `memory_ids` in a single query instead of N individual lookups.
+    ///
+    /// Edges are undirected so each side is counted separately via UNION ALL.
+    /// IDs not present in `co_access_edges` are omitted from the result (the
+    /// caller should treat missing entries as 0.0).
+    pub async fn get_neighbor_weight_sums(
+        &self,
+        memory_ids: &[Uuid],
+    ) -> HashMap<Uuid, f64> {
+        if memory_ids.is_empty() {
+            return HashMap::new();
+        }
+
+        let cap = self.params.max_bonus / self.params.graph_bonus_weight.max(f64::EPSILON);
+
+        let rows = sqlx::query(
+            "SELECT target_id, SUM(weight) AS total_weight
+             FROM (
+                 SELECT memory_a AS target_id, weight
+                 FROM co_access_edges
+                 WHERE memory_a = ANY($1)
+                 UNION ALL
+                 SELECT memory_b AS target_id, weight
+                 FROM co_access_edges
+                 WHERE memory_b = ANY($1)
+             ) t
+             GROUP BY target_id",
+        )
+        .bind(memory_ids)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
+
+        use sqlx::Row;
+        rows.into_iter()
+            .map(|r| {
+                let id: Uuid = r.get("target_id");
+                let w: f64 = r.get::<f64, _>("total_weight").min(cap);
+                (id, w)
+            })
+            .collect()
     }
 }
