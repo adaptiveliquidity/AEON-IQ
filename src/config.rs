@@ -45,6 +45,15 @@ pub struct Config {
     /// When set, all /api/v1/* routes require this key via
     /// X-Management-Key or Authorization: Bearer headers.
     pub management_api_key: Option<String>,
+    /// Must be explicitly set to `true` when `management_api_key` is absent.
+    /// Prevents accidental unauthenticated exposure in production.
+    /// Default: false.
+    pub allow_unauth_management: bool,
+
+    // ── Request limits ────────────────────────────────────────────────────────
+    /// Maximum accepted request body size in bytes.  Requests larger than this
+    /// are rejected with HTTP 413 before any processing.  Default: 10 MiB.
+    pub max_body_bytes: usize,
 
     // ── LTM Archival ──────────────────────────────────────────────────────────
     /// How often the archival job runs in hours. 0 = disabled.
@@ -149,6 +158,14 @@ impl Config {
                 .context("IMPORTANCE_REFRESH_BOOST must be a float")?,
 
             management_api_key: std::env::var("MANAGEMENT_API_KEY").ok(),
+            allow_unauth_management: std::env::var("ALLOW_UNAUTH_MANAGEMENT")
+                .unwrap_or_else(|_| "false".to_string())
+                .eq_ignore_ascii_case("true"),
+
+            max_body_bytes: std::env::var("MAX_BODY_BYTES")
+                .unwrap_or_else(|_| (10 * 1024 * 1024).to_string())
+                .parse()
+                .context("MAX_BODY_BYTES must be a positive integer")?,
 
             archival_interval_hours: std::env::var("ARCHIVAL_INTERVAL_HOURS")
                 .unwrap_or_else(|_| "24".to_string())
