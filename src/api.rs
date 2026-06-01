@@ -858,10 +858,11 @@ pub async fn trigger_archival(
 
     match archival::archive_agent(&state, &agent_id, min_age, min_mems).await {
         Ok(Some(r)) => Ok(Json(serde_json::json!({
-            "batch_id":     r.batch_id.to_string(),
-            "source_count": r.source_count,
-            "l3_count":     r.l3_count,
-            "status":       r.status,
+            "batch_id":         r.batch_id.to_string(),
+            "source_count":     r.source_count,
+            "l3_count":         r.l3_count,
+            "narrative_count":  r.narrative_count,
+            "status":           r.status,
         }))),
         Ok(None) => Ok(Json(serde_json::json!({
             "status":  "skipped",

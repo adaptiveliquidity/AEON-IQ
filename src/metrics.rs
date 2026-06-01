@@ -38,6 +38,9 @@ pub struct Metrics {
     /// Number of memories compacted per archival cycle.
     pub archival_compacted: Histogram,
 
+    /// Number of L3 narrative memories produced by the archival path.
+    pub narrative_total: Counter,
+
     /// Requests rejected by the per-agent rate limiter.
     pub rate_limited_total: Counter,
 
@@ -131,6 +134,11 @@ impl Metrics {
             .buckets(count_buckets),
         )?);
 
+        let narrative_total = reg!(Counter::with_opts(Opts::new(
+            "memoryos_narrative_total",
+            "L3 narrative memories produced by the archival path",
+        ))?);
+
         let rate_limited_total = reg!(Counter::with_opts(Opts::new(
             "memoryos_rate_limited_total",
             "Requests rejected by the per-agent rate limiter",
@@ -167,6 +175,7 @@ impl Metrics {
             vector_search_secs,
             archival_total,
             archival_compacted,
+            narrative_total,
             rate_limited_total,
             extraction_importance,
             high_importance_total,

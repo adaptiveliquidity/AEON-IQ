@@ -71,6 +71,8 @@ Archival job (`src/archival.rs`) runs on `ARCHIVAL_INTERVAL_HOURS` schedule: com
 
 Each compaction run creates an **archival batch** (`archival_batches` table) that links the tombstoned L2 sources and the new L3 facts via `memories.archival_batch_id`. This enables atomic batch-level restore: `POST /api/v1/archival/batches/:batch_id/restore` un-tombstones L2 memories and re-tombstones the L3 facts that replaced them, then sets `batch.status = 'restored'`. A restored batch cannot be restored again (idempotency guard). If the embedding step fails after the batch record is created, the batch is marked `status = 'failed'` (migration 0010).
 
+**Narrative consolidation** — alongside the 3-5 compressed semantic facts, the archival LLM call also returns a 2-3 sentence cohesive prose summary. When the narrative is non-empty it is stored as a separate L3 memory with `memory_type = 'narrative'`, tagged with the same `archival_batch_id`, and versioned in `memory_versions` (initial snapshot like any other memory). A missing or blank narrative is tolerated: facts still archive normally and `narrative_count = 0` is reported. Narrative L3 rows participate fully in retrieval, restoration, and version history. `POST /api/v1/agents/:id/archival/trigger` returns an extra `narrative_count` field (0 or 1). The `memoryos_narrative_total` Prometheus counter increments per stored narrative. All LLM work for narrative consolidation happens on the background archival path only — the retrieval hot path is unchanged.
+
 ### Decay-weighted retrieval
 
 `search_memories_filtered` uses a two-CTE SQL pattern:

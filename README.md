@@ -91,9 +91,9 @@ Every `POST /v1/chat/completions` passes through five stages:
 |------|---------|-------------|
 | **L1** | `working_memory` | Per-session rolling summary; updated every turn |
 | **L2** | `memories` (tier='L2') | Individual extracted facts; default tier |
-| **L3** | `memories` (tier='L3') | Compressed archival facts; created by the LTM job |
+| **L3** | `memories` (tier='L3') | Compressed archival facts and narrative summaries; created by the LTM job |
 
-The **LTM archival job** automatically compacts stale L2 facts into concise L3 summaries on a configurable schedule. Every compaction run is versioned and reversible — you can restore any batch with a single API call.
+The **LTM archival job** automatically compacts stale L2 facts into concise L3 summaries on a configurable schedule. Each compaction also produces a 2-3 sentence cohesive **narrative memory** (`memory_type = 'narrative'`) that captures the throughline of the archived material. Every compaction run is versioned and reversible — you can restore any batch with a single API call, which automatically un-tombstones the source L2 memories and re-tombstones both the compressed facts and their narrative.
 
 ### Retrieval formula
 

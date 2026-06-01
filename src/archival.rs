@@ -5,10 +5,16 @@
 //! with zero retrieval hits, it:
 //!
 //! 1. Fetches up to 50 such memories.
-//! 2. Asks the extractor LLM to compress them into 3-5 essential facts.
-//! 3. Stores the compressed facts as L3 (`tier = 'L3'`, lower confidence).
+//! 2. Asks the extractor LLM to compress them into 3-5 essential facts AND
+//!    a 2-3 sentence cohesive narrative summary.
+//! 3. Stores the compressed facts as L3 semantic memories AND the narrative as
+//!    an L3 memory with `memory_type = 'narrative'` (`tier = 'L3'`, lower
+//!    confidence).  Both are versioned (initial snapshot in `memory_versions`).
 //! 4. Tombstones the originals (sets archived_at = NOW()) — they are retained
 //!    for audit/lineage but excluded from all retrieval queries.
+//!
+//! All LLM work happens on this background path only — the retrieval hot path
+//! is never blocked by narrative or fact synthesis.
 //!
 //! The job is started via `tokio::spawn(archival::run_job(state))` in `main.rs`
 //! and only runs when `ARCHIVAL_INTERVAL_HOURS > 0`.
@@ -24,7 +30,18 @@ pub struct ArchivalResult {
     pub batch_id: Uuid,
     pub source_count: usize,
     pub l3_count: usize,
+    /// Number of narrative L3 memories created (0 or 1).
+    pub narrative_count: usize,
     pub status: &'static str,
+}
+
+/// Output of the LLM compaction call.  Both fields are best-effort: a successful
+/// compaction must produce at least one fact, but a missing or empty narrative
+/// is tolerated and reported as `narrative = None`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct CompactionOutput {
+    facts: Vec<String>,
+    narrative: Option<String>,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -71,7 +88,8 @@ async fn run_cycle(state: &AppState) -> Result<()> {
     for agent_id in agent_ids {
         match archive_agent(state, &agent_id, min_age, min_count).await {
             Ok(Some(r)) => info!(agent_id = %agent_id, batch = %r.batch_id,
-                source = r.source_count, l3 = r.l3_count, "Archival complete"),
+                source = r.source_count, l3 = r.l3_count,
+                narrative = r.narrative_count, "Archival complete"),
             Ok(None)    => {},
             Err(e)      => warn!(agent_id = %agent_id, "Per-agent archival failed: {}", e),
         }
@@ -100,68 +118,48 @@ pub async fn archive_agent(
     let count = candidates.len();
     info!(agent_id = %agent_id, count, "Compacting L2 → L3");
 
-    // ── Ask the LLM to compress facts ─────────────────────────────────────────
+    // ── Ask the LLM to compress facts AND build a narrative ──────────────────
     let numbered: Vec<String> = candidates
         .iter()
         .enumerate()
         .map(|(i, (_, c))| format!("{}. {}", i + 1, c))
         .collect();
 
-    let prompt = format!(
-        "Compress these {} memory facts into 3-5 concise, high-signal points. \
-         Preserve the most important concrete information. \
-         Return a JSON object with a single key \"facts\" containing an array of strings. \
-         Example: {{\"facts\": [\"Alex is building NovaPay\", \"NovaPay does cross-border payments\"]}}\n\n{}",
-        candidates.len(),
-        numbered.join("\n")
-    );
+    let compaction = call_compaction_llm(state, &numbered).await?;
 
-    let api_key = state.config.openai_api_key.as_deref().unwrap_or("no-key");
-    let resp = state
-        .http_client
-        .post(format!("{}/v1/chat/completions", state.config.extractor_base_url))
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({
-            "model": state.config.extractor_model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1,
-            "response_format": {"type": "json_object"}
-        }))
-        .send()
-        .await?;
-
-    if !resp.status().is_success() {
-        return Err(anyhow::anyhow!("Compaction LLM returned {}", resp.status()));
-    }
-
-    let body: serde_json::Value = resp.json().await?;
-    let raw = body["choices"][0]["message"]["content"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("No compaction content"))?;
-
-    let compressed = parse_compressed_facts(raw);
-    if compressed.is_empty() {
+    if compaction.facts.is_empty() {
         warn!(agent_id = %agent_id, "No compressed facts returned — skipping deletion");
         return Ok(None);
     }
 
     // ── Create versioned batch record before mutating any rows ───────────────
-    let stored_count = compressed.len();
+    let fact_count = compaction.facts.len();
+    let narrative_text = compaction
+        .narrative
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let narrative_count = if narrative_text.is_some() { 1 } else { 0 };
+    let stored_l3_count = fact_count + narrative_count;
+
     let batch_id = store::create_archival_batch(
         state,
         agent_id,
         count as i32,
-        stored_count as i32,
+        stored_l3_count as i32,
     )
     .await?;
 
-    // ── Batch-embed all compressed facts, then store as L3 ───────────────────
-    let fact_refs: Vec<&str> = compressed.iter().map(|s| s.as_str()).collect();
-    let embeddings = match embed_texts(state, &fact_refs).await {
+    // ── Batch-embed all compressed facts (and narrative, if present) ─────────
+    let mut texts_to_embed: Vec<&str> =
+        compaction.facts.iter().map(|s| s.as_str()).collect();
+    if let Some(n) = narrative_text.as_deref() {
+        texts_to_embed.push(n);
+    }
+    let embeddings = match embed_texts(state, &texts_to_embed).await {
         Ok(embs) => embs,
         Err(e) => {
-            warn!(agent_id = %agent_id, "Batch embedding failed for L3 facts: {}", e);
+            warn!(agent_id = %agent_id, "Batch embedding failed for L3 archival output: {}", e);
             if let Err(fe) = store::fail_archival_batch(state, batch_id).await {
                 warn!(agent_id = %agent_id, "Could not mark batch as failed: {}", fe);
             }
@@ -169,7 +167,13 @@ pub async fn archive_agent(
         }
     };
 
-    for (fact, emb) in compressed.iter().zip(embeddings) {
+    let mut emb_iter = embeddings.into_iter();
+    let mut facts_stored = 0usize;
+    for fact in &compaction.facts {
+        let emb = match emb_iter.next() {
+            Some(e) => e,
+            None => break,
+        };
         if let Err(e) = store::store_memory_with_tier(
             state,
             agent_id,
@@ -188,6 +192,39 @@ pub async fn archive_agent(
         .await
         {
             warn!(agent_id = %agent_id, "Failed to store L3 fact: {}", e);
+        } else {
+            facts_stored += 1;
+        }
+    }
+
+    let mut narrative_stored = 0usize;
+    if let Some(narrative) = narrative_text.as_deref() {
+        if let Some(emb) = emb_iter.next() {
+            match store::store_memory_with_tier(
+                state,
+                agent_id,
+                None,
+                narrative,
+                "narrative",
+                0.7,
+                emb,
+                None,
+                "L3",
+                "inferred",
+                0.5_f32,
+                "extractor",
+                Some(batch_id),
+            )
+            .await
+            {
+                Ok(_) => narrative_stored = 1,
+                Err(e) => warn!(
+                    agent_id = %agent_id,
+                    "Failed to store L3 narrative: {}", e
+                ),
+            }
+        } else {
+            warn!(agent_id = %agent_id, "Missing narrative embedding — skipping narrative store");
         }
     }
 
@@ -199,12 +236,16 @@ pub async fn archive_agent(
         .metrics
         .archival_compacted
         .observe(tombstoned as f64);
+    if narrative_stored > 0 {
+        state.metrics.narrative_total.inc();
+    }
 
     info!(
         agent_id = %agent_id,
         batch = %batch_id,
         original = count,
-        compressed = stored_count,
+        facts = facts_stored,
+        narrative = narrative_stored,
         tombstoned,
         "L2→L3 compaction complete"
     );
@@ -212,9 +253,65 @@ pub async fn archive_agent(
     Ok(Some(ArchivalResult {
         batch_id,
         source_count: count,
-        l3_count: stored_count,
+        l3_count: facts_stored,
+        narrative_count: narrative_stored,
         status: "completed",
     }))
+}
+
+// ── LLM compaction call ───────────────────────────────────────────────────────
+
+async fn call_compaction_llm(
+    state: &AppState,
+    numbered: &[String],
+) -> Result<CompactionOutput> {
+    let prompt = format!(
+        "You are compressing {} stale memory facts for long-term storage.\n\
+         Return ONLY a JSON object with two keys:\n\
+         - \"facts\": an array of 3-5 concise, high-signal strings preserving the \
+         most important concrete information.\n\
+         - \"narrative\": a 2-3 sentence cohesive prose summary of the same \
+         material. Plain English, no JSON, no bullet points.\n\
+         Example: {{\
+         \"facts\": [\"Alex is building NovaPay\", \"NovaPay does cross-border payments\"], \
+         \"narrative\": \"Alex is building NovaPay, a cross-border payments product. \
+         The discussion covered both architecture and go-to-market plans.\"\
+         }}\n\n{}",
+        numbered.len(),
+        numbered.join("\n")
+    );
+
+    let api_key = state.config.openai_api_key.as_deref().unwrap_or("no-key");
+    let resp = state
+        .http_client
+        .post(format!(
+            "{}/v1/chat/completions",
+            state.config.extractor_base_url
+        ))
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "model": state.config.extractor_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,
+            "response_format": {"type": "json_object"}
+        }))
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "Compaction LLM returned {}",
+            resp.status()
+        ));
+    }
+
+    let body: serde_json::Value = resp.json().await?;
+    let raw = body["choices"][0]["message"]["content"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("No compaction content"))?;
+
+    Ok(parse_compaction_output(raw))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -226,18 +323,33 @@ fn strip_code_fences(s: &str) -> &str {
     s.trim_end_matches("```").trim()
 }
 
+/// Backwards-compatible facts parser; delegates to `parse_compaction_output`.
+#[cfg(test)]
 fn parse_compressed_facts(raw: &str) -> Vec<String> {
+    parse_compaction_output(raw).facts
+}
+
+fn parse_compaction_output(raw: &str) -> CompactionOutput {
     let raw = strip_code_fences(raw);
+    let mut out = CompactionOutput::default();
+
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
-        let arr = v["facts"].as_array().or_else(|| v.as_array());
+        let arr = v.get("facts").and_then(|x| x.as_array()).or_else(|| v.as_array());
         if let Some(arr) = arr {
-            return arr
+            out.facts = arr
                 .iter()
                 .filter_map(|x| x.as_str().map(|s| s.to_string()))
                 .collect();
         }
+
+        if let Some(narrative) = v.get("narrative").and_then(|x| x.as_str()) {
+            let trimmed = narrative.trim();
+            if !trimmed.is_empty() {
+                out.narrative = Some(trimmed.to_string());
+            }
+        }
     }
-    Vec::new()
+    out
 }
 
 #[cfg(test)]
@@ -278,5 +390,42 @@ mod tests {
         assert!(parse_compressed_facts("not json at all").is_empty());
         assert!(parse_compressed_facts("").is_empty());
         assert!(parse_compressed_facts("{}").is_empty());
+    }
+
+    #[test]
+    fn parse_compaction_with_facts_and_narrative() {
+        let raw = r#"{
+            "facts": ["Alex builds NovaPay", "NovaPay handles cross-border payments"],
+            "narrative": "Alex is building NovaPay, a cross-border payments product. The conversation covered both technical architecture and go-to-market planning."
+        }"#;
+        let out = parse_compaction_output(raw);
+        assert_eq!(out.facts.len(), 2);
+        assert!(out.narrative.is_some());
+        let narrative = out.narrative.unwrap();
+        assert!(narrative.starts_with("Alex is building NovaPay"));
+        assert!(!narrative.contains('\n'));
+    }
+
+    #[test]
+    fn parse_compaction_missing_narrative_is_none() {
+        let raw = r#"{"facts": ["Only facts here"]}"#;
+        let out = parse_compaction_output(raw);
+        assert_eq!(out.facts, vec!["Only facts here"]);
+        assert!(out.narrative.is_none(), "missing narrative must be None");
+    }
+
+    #[test]
+    fn parse_compaction_empty_narrative_is_none() {
+        let raw = r#"{"facts": ["F"], "narrative": "   "}"#;
+        let out = parse_compaction_output(raw);
+        assert!(out.narrative.is_none(), "blank narrative must be normalised to None");
+    }
+
+    #[test]
+    fn parse_compaction_strips_fences() {
+        let raw = "```json\n{\"facts\": [\"f\"], \"narrative\": \"a story\"}\n```";
+        let out = parse_compaction_output(raw);
+        assert_eq!(out.facts, vec!["f"]);
+        assert_eq!(out.narrative.as_deref(), Some("a story"));
     }
 }
