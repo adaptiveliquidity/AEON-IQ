@@ -13,7 +13,10 @@ use crate::{
     archival,
     embeddings::{embed_text, embed_texts},
     memory::store,
-    models::{ArchivalBatch, ArchivedMemory, Memory, MemoryConflict, MemoryExportRow, RelationRow, SessionInfo, WorkingMemory},
+    models::{
+        ArchivalBatch, ArchivedMemory, Memory, MemoryConflict, MemoryExportRow, RelationRow,
+        SessionInfo, WorkingMemory,
+    },
     AppState,
 };
 
@@ -65,8 +68,16 @@ impl From<Memory> for MemoryDto {
             source_turn: m.source_turn,
             importance_score: m.importance_score,
             importance_source: m.importance_source,
-            status: if m.status.is_empty() { "active".to_string() } else { m.status },
-            sensitivity: if m.sensitivity.is_empty() { "unknown".to_string() } else { m.sensitivity },
+            status: if m.status.is_empty() {
+                "active".to_string()
+            } else {
+                m.status
+            },
+            sensitivity: if m.sensitivity.is_empty() {
+                "unknown".to_string()
+            } else {
+                m.sensitivity
+            },
             valid_from: m.valid_from.map(|t| t.to_rfc3339()),
             valid_to: m.valid_to.map(|t| t.to_rfc3339()),
             suppression_reason: m.suppression_reason,
@@ -439,7 +450,10 @@ pub async fn delete_agent(
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err((StatusCode::NOT_FOUND, format!("agent '{}' not found", agent_id)))
+        Err((
+            StatusCode::NOT_FOUND,
+            format!("agent '{}' not found", agent_id),
+        ))
     }
 }
 
@@ -455,12 +469,11 @@ pub async fn list_memories(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let total: (i64,) =
-        sqlx::query_as("SELECT COUNT(*)::bigint FROM memories WHERE agent_id = $1")
-            .bind(&agent_id)
-            .fetch_one(&state.db)
-            .await
-            .unwrap_or((0,));
+    let total: (i64,) = sqlx::query_as("SELECT COUNT(*)::bigint FROM memories WHERE agent_id = $1")
+        .bind(&agent_id)
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or((0,));
 
     Ok(Json(MemoryListResponse {
         total: total.0,
@@ -481,15 +494,10 @@ pub async fn memories_at_timestamp(
     let limit = query.limit.unwrap_or(50).min(200);
     let offset = query.offset.unwrap_or(0);
 
-    let memories = store::list_memories_at_timestamp(
-        &state,
-        &agent_id,
-        query.timestamp,
-        limit,
-        offset,
-    )
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let memories =
+        store::list_memories_at_timestamp(&state, &agent_id, query.timestamp, limit, offset)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let total = store::count_memories_at_timestamp(&state, &agent_id, query.timestamp)
         .await
@@ -537,14 +545,10 @@ pub async fn memories_diff(
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let before_map: HashMap<Uuid, store::TemporalMemoryVersion> = before_rows
-        .into_iter()
-        .map(|r| (r.memory_id, r))
-        .collect();
-    let after_map: HashMap<Uuid, store::TemporalMemoryVersion> = after_rows
-        .into_iter()
-        .map(|r| (r.memory_id, r))
-        .collect();
+    let before_map: HashMap<Uuid, store::TemporalMemoryVersion> =
+        before_rows.into_iter().map(|r| (r.memory_id, r)).collect();
+    let after_map: HashMap<Uuid, store::TemporalMemoryVersion> =
+        after_rows.into_iter().map(|r| (r.memory_id, r)).collect();
 
     let mut modified = Vec::new();
     let mut status_changed = Vec::new();
@@ -610,9 +614,12 @@ pub async fn create_memory(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let embedding = embed_text(&state, &body.content)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Embedding: {}", e)))?;
+    let embedding = embed_text(&state, &body.content).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Embedding: {}", e),
+        )
+    })?;
 
     let id = store::store_memory(
         &state,
@@ -630,7 +637,9 @@ pub async fn create_memory(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok(Json(serde_json::json!({ "id": id.to_string(), "success": true })))
+    Ok(Json(
+        serde_json::json!({ "id": id.to_string(), "success": true }),
+    ))
 }
 
 pub async fn patch_memory(
@@ -640,9 +649,12 @@ pub async fn patch_memory(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let uuid = Uuid::parse_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
-    let embedding = embed_text(&state, &body.content)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Embedding: {}", e)))?;
+    let embedding = embed_text(&state, &body.content).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Embedding: {}", e),
+        )
+    })?;
 
     let updated = store::update_memory_content(&state, uuid, &body.content, embedding)
         .await
@@ -651,7 +663,10 @@ pub async fn patch_memory(
     if updated {
         Ok(Json(serde_json::json!({ "updated": true })))
     } else {
-        Err((StatusCode::NOT_FOUND, format!("memory {} not found or archived", id)))
+        Err((
+            StatusCode::NOT_FOUND,
+            format!("memory {} not found or archived", id),
+        ))
     }
 }
 
@@ -659,8 +674,7 @@ pub async fn delete_memory(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let uuid =
-        Uuid::parse_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let uuid = Uuid::parse_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let deleted = store::delete_memory(&state, uuid)
         .await
@@ -678,9 +692,12 @@ pub async fn search_memories_semantic(
     let limit = req.limit.unwrap_or(20).min(100);
     let threshold = req.threshold.unwrap_or(state.config.retrieval_threshold);
 
-    let embedding = embed_text(&state, &req.query)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Embedding: {}", e)))?;
+    let embedding = embed_text(&state, &req.query).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Embedding: {}", e),
+        )
+    })?;
 
     let search_start = std::time::Instant::now();
     let rows = store::search_memories_filtered(
@@ -790,7 +807,10 @@ pub async fn restore_memory(
     if restored {
         Ok(Json(serde_json::json!({ "restored": true })))
     } else {
-        Err((StatusCode::NOT_FOUND, format!("memory {} not found or not archived", id)))
+        Err((
+            StatusCode::NOT_FOUND,
+            format!("memory {} not found or not archived", id),
+        ))
     }
 }
 
@@ -822,8 +842,7 @@ pub async fn restore_archival_batch(
     State(state): State<AppState>,
     Path(batch_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let uuid = Uuid::parse_str(&batch_id)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let uuid = Uuid::parse_str(&batch_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let result = store::restore_archival_batch(&state, uuid)
         .await
@@ -853,7 +872,7 @@ pub async fn trigger_archival(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let min_age  = state.config.archival_min_age_days as i64;
+    let min_age = state.config.archival_min_age_days as i64;
     let min_mems = state.config.archival_min_memories;
 
     match archival::archive_agent(&state, &agent_id, min_age, min_mems).await {
@@ -925,7 +944,10 @@ pub async fn delete_session(
     } else {
         Err((
             StatusCode::NOT_FOUND,
-            format!("no working memory for session {} / agent {}", session_id, agent_id),
+            format!(
+                "no working memory for session {} / agent {}",
+                session_id, agent_id
+            ),
         ))
     }
 }
@@ -1008,10 +1030,7 @@ pub async fn resolve_conflict(
     if !valid.contains(&body.resolution.as_str()) {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!(
-                "resolution must be one of: {}",
-                valid.join(", ")
-            ),
+            format!("resolution must be one of: {}", valid.join(", ")),
         ));
     }
 
@@ -1020,7 +1039,9 @@ pub async fn resolve_conflict(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if resolved {
-        Ok(Json(serde_json::json!({ "resolved": true, "resolution": body.resolution })))
+        Ok(Json(
+            serde_json::json!({ "resolved": true, "resolution": body.resolution }),
+        ))
     } else {
         Err((
             StatusCode::NOT_FOUND,
@@ -1066,7 +1087,12 @@ pub async fn bulk_operation(
         .as_deref()
         .map(|s| s.parse::<DateTime<Utc>>())
         .transpose()
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid older_than: {}", e)))?;
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("invalid older_than: {}", e),
+            )
+        })?;
 
     let affected = store::bulk_operation_memories(
         &state,
@@ -1177,17 +1203,23 @@ pub async fn import_memories(
     for row in &parsed {
         let content = match row["content"].as_str() {
             Some(c) => c,
-            None => { errors += 1; continue; }
+            None => {
+                errors += 1;
+                continue;
+            }
         };
         let embedding = match emb_iter.next() {
             Some(e) => e,
-            None => { errors += 1; break; }
+            None => {
+                errors += 1;
+                break;
+            }
         };
 
         let memory_type = row["memory_type"].as_str().unwrap_or("semantic");
-        let confidence  = row["confidence"].as_f64().unwrap_or(0.8) as f32;
-        let provenance  = row["provenance"].as_str().unwrap_or("user_stated");
-        let importance_score  = row["importance_score"].as_f64().unwrap_or(0.5) as f32;
+        let confidence = row["confidence"].as_f64().unwrap_or(0.8) as f32;
+        let provenance = row["provenance"].as_str().unwrap_or("user_stated");
+        let importance_score = row["importance_score"].as_f64().unwrap_or(0.5) as f32;
         let importance_source = row["importance_source"].as_str().unwrap_or("extractor");
 
         // Track dedup by sampling the counter before and after each insert.
@@ -1241,6 +1273,17 @@ pub struct PatchSensitivityBody {
 
 const VALID_STATUSES: &[&str] = &["active", "candidate", "quarantined", "suppressed"];
 const VALID_SENSITIVITIES: &[&str] = &["unknown", "normal", "private", "sensitive", "secret"];
+type StatusVersionMeta = (
+    String,
+    String,
+    String,
+    f32,
+    String,
+    f32,
+    String,
+    String,
+    Option<i32>,
+);
 
 /// PATCH /api/v1/memories/:id/status
 ///
@@ -1264,7 +1307,10 @@ pub async fn patch_memory_status(
 
     let uuid = Uuid::parse_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
-    let mut tx = state.db.begin().await
+    let mut tx = state
+        .db
+        .begin()
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let suppression_reason: Option<String> = if body.status == "suppressed" {
@@ -1293,19 +1339,27 @@ pub async fn patch_memory_status(
     }
 
     // Snapshot the change as a new version.
-    let meta: Option<(String, String, String, f32, String, f32, String, String, Option<i32>)> =
-        sqlx::query_as(
-            "SELECT agent_id, content, memory_type, confidence, provenance,
+    let meta: Option<StatusVersionMeta> = sqlx::query_as(
+        "SELECT agent_id, content, memory_type, confidence, provenance,
                     importance_score, importance_source, sensitivity, source_turn
              FROM memories WHERE id = $1",
-        )
-        .bind(uuid)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    )
+    .bind(uuid)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    if let Some((agent_id, content, memory_type, confidence, provenance,
-                 importance_score, importance_source, sensitivity, source_turn)) = meta
+    if let Some((
+        agent_id,
+        content,
+        memory_type,
+        confidence,
+        provenance,
+        importance_score,
+        importance_source,
+        sensitivity,
+        source_turn,
+    )) = meta
     {
         // Use the pool directly for the version insert (can't use tx due to ownership).
         // The outer tx will either commit or rollback the status update.
@@ -1338,10 +1392,13 @@ pub async fn patch_memory_status(
         .await;
     }
 
-    tx.commit().await
+    tx.commit()
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok(Json(serde_json::json!({ "updated": true, "status": body.status })))
+    Ok(Json(
+        serde_json::json!({ "updated": true, "status": body.status }),
+    ))
 }
 
 /// PATCH /api/v1/memories/:id/sensitivity
@@ -1380,7 +1437,9 @@ pub async fn patch_memory_sensitivity(
         return Err((StatusCode::NOT_FOUND, format!("memory {} not found", id)));
     }
 
-    Ok(Json(serde_json::json!({ "updated": true, "sensitivity": body.sensitivity })))
+    Ok(Json(
+        serde_json::json!({ "updated": true, "sensitivity": body.sensitivity }),
+    ))
 }
 
 // ── Retrieval logs ────────────────────────────────────────────────────────────
@@ -1526,7 +1585,9 @@ pub async fn list_memory_versions(
             change_type: r.get("change_type"),
             change_reason: r.get("change_reason"),
             changed_by: r.get("changed_by"),
-            created_at: r.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
+            created_at: r
+                .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                .to_rfc3339(),
         })
         .collect();
 
@@ -1557,8 +1618,8 @@ pub async fn post_feedback(
     State(state): State<AppState>,
     Json(body): Json<FeedbackBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let memory_uuid = Uuid::parse_str(&body.memory_id)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let memory_uuid =
+        Uuid::parse_str(&body.memory_id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let feedback = body.feedback.clamp(0.0, 1.0);
 
     // Insert feedback record.

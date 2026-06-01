@@ -6,12 +6,12 @@ use super::reward::EpisodeMetrics;
 /// Hard parameter bounds (min, max) for each θ dimension.
 /// Values outside these ranges are physically meaningless.
 const BOUNDS: [(f64, f64); 6] = [
-    (0.001, 0.5),  // pressure_a
-    (0.05,  2.0),  // pressure_b
-    (0.01,  1.0),  // kp
-    (0.001, 0.5),  // ki
-    (0.0,   1.0),  // graph_bonus_weight
-    (0.05,  0.99), // retrieval_threshold
+    (0.001, 0.5), // pressure_a
+    (0.05, 2.0),  // pressure_b
+    (0.01, 1.0),  // kp
+    (0.001, 0.5), // ki
+    (0.0, 1.0),   // graph_bonus_weight
+    (0.05, 0.99), // retrieval_threshold
 ];
 
 /// Perturbation magnitude as a fraction of each parameter's full range.
@@ -32,8 +32,10 @@ pub struct MetaLearner {
     pub epsilon: f64,
     pub current: PolicyParams,
     /// Snapshot before the last update (enables rollback).
+    #[allow(dead_code)]
     previous: Option<PolicyParams>,
     /// Reward observed during the episode that produced `current`.
+    #[allow(dead_code)]
     last_reward: Option<f64>,
 }
 
@@ -48,6 +50,7 @@ impl MetaLearner {
     }
 
     /// Return the current best-known policy (pure exploitation).
+    #[allow(dead_code)]
     pub fn suggest(&self) -> PolicyParams {
         self.current.clone()
     }
@@ -82,10 +85,10 @@ impl MetaLearner {
             .collect();
 
         PolicyParams {
-            pressure_a:         perturbed[0],
-            pressure_b:         perturbed[1],
-            kp:                 perturbed[2],
-            ki:                 perturbed[3],
+            pressure_a: perturbed[0],
+            pressure_b: perturbed[1],
+            kp: perturbed[2],
+            ki: perturbed[3],
             graph_bonus_weight: perturbed[4],
             retrieval_threshold: perturbed[5],
         }
@@ -96,15 +99,17 @@ impl MetaLearner {
     /// Hill-climbing rule: replace `current` with `new_policy` only when
     /// `reward >= last_reward` (non-degrading).  This prevents a bad
     /// perturbation from being locked in even after a negative signal.
+    #[allow(dead_code)]
     pub fn update(&mut self, _metrics: &EpisodeMetrics, reward: f64, new_policy: PolicyParams) {
         self.previous = Some(self.current.clone());
-        if self.last_reward.map_or(true, |prev| reward >= prev) {
+        if self.last_reward.is_none_or(|prev| reward >= prev) {
             self.current = new_policy;
         }
         self.last_reward = Some(reward);
     }
 
     /// Revert to the policy that was active before the last `update` call.
+    #[allow(dead_code)]
     pub fn rollback(&mut self) {
         if let Some(prev) = self.previous.take() {
             self.current = prev;

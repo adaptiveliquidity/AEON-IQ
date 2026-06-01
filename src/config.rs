@@ -1,6 +1,6 @@
-use anyhow::{Context, Result};
 use crate::memory::amp::config::AmpConfig;
 use crate::memory::rmk::config::RmkConfig;
+use anyhow::{Context, Result};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -106,8 +106,7 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
-            database_url: std::env::var("DATABASE_URL")
-                .context("DATABASE_URL is required")?,
+            database_url: std::env::var("DATABASE_URL").context("DATABASE_URL is required")?,
             upstream_base_url: std::env::var("UPSTREAM_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com".to_string()),
             port: std::env::var("PORT")
@@ -135,11 +134,10 @@ impl Config {
                 .unwrap_or_else(|_| "1536".to_string())
                 .parse()
                 .context("EMBEDDING_DIMENSION must be a number")?,
-            embedding_base_url: std::env::var("EMBEDDING_BASE_URL")
-                .unwrap_or_else(|_| {
-                    std::env::var("UPSTREAM_BASE_URL")
-                        .unwrap_or_else(|_| "https://api.openai.com".to_string())
-                }),
+            embedding_base_url: std::env::var("EMBEDDING_BASE_URL").unwrap_or_else(|_| {
+                std::env::var("UPSTREAM_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.openai.com".to_string())
+            }),
 
             extractor_model: std::env::var("EXTRACTOR_MODEL")
                 .unwrap_or_else(|_| "gpt-4o-mini".to_string()),

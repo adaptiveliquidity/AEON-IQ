@@ -92,22 +92,29 @@ pub async fn handle_chat_completions(
     // When RMK is enabled, override the static retrieval threshold with the
     // agent's current learned policy and capture the policy ID for episode logging.
     // The full PolicyParams are kept so all 6 θ dimensions are applied during retrieval.
-    let (effective_threshold, rmk_policy_id, rmk_policy_params): (f64, Option<Uuid>, Option<PolicyParams>) =
-        if state.config.rmk_config.enabled {
-            match rmk_store::get_latest_policy(&state.db, &agent_id).await {
-                Ok(Some((pid, policy))) => {
-                    let threshold = policy.retrieval_threshold;
-                    (threshold, Some(pid), Some(policy))
-                }
-                _ => (state.config.retrieval_threshold, None, None),
+    let (effective_threshold, rmk_policy_id, rmk_policy_params): (
+        f64,
+        Option<Uuid>,
+        Option<PolicyParams>,
+    ) = if state.config.rmk_config.enabled {
+        match rmk_store::get_latest_policy(&state.db, &agent_id).await {
+            Ok(Some((pid, policy))) => {
+                let threshold = policy.retrieval_threshold;
+                (threshold, Some(pid), Some(policy))
             }
-        } else {
-            (state.config.retrieval_threshold, None, None)
-        };
+            _ => (state.config.retrieval_threshold, None, None),
+        }
+    } else {
+        (state.config.retrieval_threshold, None, None)
+    };
 
     let mut memories_retrieved: usize = 0;
     let mut injected_chars: usize = 0;
-    let total_prompt_chars: usize = chat_req.messages.iter().map(|m| m.content_text().len()).sum();
+    let total_prompt_chars: usize = chat_req
+        .messages
+        .iter()
+        .map(|m| m.content_text().len())
+        .sum();
     if !user_message.is_empty() {
         match retrieve_relevant(
             &state,
@@ -140,24 +147,45 @@ pub async fn handle_chat_completions(
                                 name: None,
                             },
                         );
-                        state.metrics.injection_total.with_label_values(&["hit"]).inc();
-                        state.metrics.injected_per_req.observe(memories_retrieved as f64);
+                        state
+                            .metrics
+                            .injection_total
+                            .with_label_values(&["hit"])
+                            .inc();
+                        state
+                            .metrics
+                            .injected_per_req
+                            .observe(memories_retrieved as f64);
                     } else {
-                        state.metrics.injection_total.with_label_values(&["miss"]).inc();
+                        state
+                            .metrics
+                            .injection_total
+                            .with_label_values(&["miss"])
+                            .inc();
                     }
                 } else {
-                    state.metrics.injection_total.with_label_values(&["miss"]).inc();
+                    state
+                        .metrics
+                        .injection_total
+                        .with_label_values(&["miss"])
+                        .inc();
                 }
             }
             Err(e) => {
                 warn!(agent_id = %agent_id, "Memory retrieval skipped: {}", e);
-                state.metrics.injection_total.with_label_values(&["miss"]).inc();
+                state
+                    .metrics
+                    .injection_total
+                    .with_label_values(&["miss"])
+                    .inc();
             }
         }
     }
 
     // ── 5. Build + send upstream request ─────────────────────────────────────
-    let upstream_url = state.provider.completions_url(&state.config.upstream_base_url);
+    let upstream_url = state
+        .provider
+        .completions_url(&state.config.upstream_base_url);
     let request_body = state.provider.build_request(&chat_req);
 
     let auth_header = headers
@@ -176,13 +204,14 @@ pub async fn handle_chat_completions(
         req_builder = req_builder.header(*name, *value);
     }
 
-    let upstream_resp = req_builder
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Upstream unreachable: {}", e)))?;
+    let upstream_resp = req_builder.json(&request_body).send().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("Upstream unreachable: {}", e),
+        )
+    })?;
 
-    let up_status  = upstream_resp.status();
+    let up_status = upstream_resp.status();
     let up_headers = upstream_resp.headers().clone();
     let is_streaming = chat_req.stream.unwrap_or(false);
     let model = chat_req.model.clone();
@@ -207,8 +236,15 @@ pub async fn handle_chat_completions(
     let result = match state.provider {
         Provider::Anthropic => {
             proxy_anthropic(
-                state, agent_id, session_id, original_messages,
-                turn_number, upstream_resp, up_status, is_streaming, model,
+                state,
+                agent_id,
+                session_id,
+                original_messages,
+                turn_number,
+                upstream_resp,
+                up_status,
+                is_streaming,
+                model,
                 importance_override,
             )
             .await
@@ -216,15 +252,27 @@ pub async fn handle_chat_completions(
         _ => {
             if is_streaming {
                 proxy_streaming(
-                    state, agent_id, session_id, original_messages,
-                    turn_number, upstream_resp, up_status, up_headers,
+                    state,
+                    agent_id,
+                    session_id,
+                    original_messages,
+                    turn_number,
+                    upstream_resp,
+                    up_status,
+                    up_headers,
                     importance_override,
                 )
                 .await
             } else {
                 proxy_buffered(
-                    state, agent_id, session_id, original_messages,
-                    turn_number, upstream_resp, up_status, up_headers,
+                    state,
+                    agent_id,
+                    session_id,
+                    original_messages,
+                    turn_number,
+                    upstream_resp,
+                    up_status,
+                    up_headers,
                     importance_override,
                 )
                 .await
@@ -270,10 +318,9 @@ pub async fn handle_chat_completions(
                 retrieval_precision: precision,
                 eviction_cost,
             };
-            let reward = RewardModel::new(cfg.rmk_config.reward_weights.clone())
-                .compute_reward(&metrics);
-            if let Err(e) =
-                rmk_store::insert_episode(&db, &aid, policy_id, &metrics, reward).await
+            let reward =
+                RewardModel::new(cfg.rmk_config.reward_weights.clone()).compute_reward(&metrics);
+            if let Err(e) = rmk_store::insert_episode(&db, &aid, policy_id, &metrics, reward).await
             {
                 warn!(agent_id = %aid, "RMK episode logging failed: {}", e);
             }
@@ -379,7 +426,9 @@ async fn proxy_streaming(
         }
         builder = builder.header(k.as_str(), v);
     }
-    Ok(builder.body(Body::from_stream(client_stream)).expect("response builder; infallible"))
+    Ok(builder
+        .body(Body::from_stream(client_stream))
+        .expect("response builder; infallible"))
 }
 
 // ── OpenAI / Gemini buffered path ─────────────────────────────────────────────
@@ -396,10 +445,12 @@ async fn proxy_buffered(
     up_headers: reqwest::header::HeaderMap,
     importance_override: Option<f32>,
 ) -> Result<Response<Body>, (StatusCode, String)> {
-    let bytes = upstream_resp
-        .bytes()
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Failed to read upstream: {}", e)))?;
+    let bytes = upstream_resp.bytes().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("Failed to read upstream: {}", e),
+        )
+    })?;
 
     let bytes_clone = bytes.clone();
     tokio::spawn(async move {
@@ -425,7 +476,9 @@ async fn proxy_buffered(
         }
         builder = builder.header(k.as_str(), v);
     }
-    Ok(builder.body(Body::from(bytes)).expect("response builder; infallible"))
+    Ok(builder
+        .body(Body::from(bytes))
+        .expect("response builder; infallible"))
 }
 
 // ── Anthropic path (buffer + synthesize OpenAI response) ──────────────────────
@@ -455,8 +508,7 @@ async fn proxy_anthropic(
 ) -> Result<Response<Body>, (StatusCode, String)> {
     // Forward non-2xx errors as-is (Anthropic error JSON is informative).
     if !up_status.is_success() {
-        let status = StatusCode::from_u16(up_status.as_u16())
-            .unwrap_or(StatusCode::BAD_GATEWAY);
+        let status = StatusCode::from_u16(up_status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
         let body = upstream_resp.bytes().await.unwrap_or_default();
         return Ok(Response::builder()
             .status(status)
@@ -465,10 +517,12 @@ async fn proxy_anthropic(
             .expect("static headers; infallible"));
     }
 
-    let bytes = upstream_resp
-        .bytes()
-        .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Failed to read Anthropic response: {}", e)))?;
+    let bytes = upstream_resp.bytes().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            format!("Failed to read Anthropic response: {}", e),
+        )
+    })?;
 
     let content = if is_streaming {
         state.provider.parse_streaming(&bytes)
@@ -478,12 +532,21 @@ async fn proxy_anthropic(
 
     if !content.is_empty() {
         let state_c = state.clone();
-        let agent_id_c  = agent_id.clone();
+        let agent_id_c = agent_id.clone();
         let session_id_c = session_id.clone();
-        let messages_c  = original_messages.clone();
-        let content_c   = content.clone();
+        let messages_c = original_messages.clone();
+        let content_c = content.clone();
         tokio::spawn(async move {
-            extract_and_store(state_c, agent_id_c, session_id_c, messages_c, content_c, turn_number, importance_override).await;
+            extract_and_store(
+                state_c,
+                agent_id_c,
+                session_id_c,
+                messages_c,
+                content_c,
+                turn_number,
+                importance_override,
+            )
+            .await;
         });
     }
 

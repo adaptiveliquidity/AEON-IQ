@@ -2,7 +2,7 @@ use dashmap::DashMap;
 use std::time::Instant;
 
 struct Bucket {
-    tokens:      f64,
+    tokens: f64,
     last_refill: Instant,
 }
 
@@ -12,19 +12,19 @@ struct Bucket {
 /// and `RATE_LIMIT_BURST` (max burst; defaults to twice the per-minute rate
 /// but at least 1).  Each agent gets its own independent bucket.
 pub struct RateLimiter {
-    buckets:     DashMap<String, Bucket>,
-    refill_rate: f64,  // tokens per second
-    burst:       f64,  // bucket capacity
-    enabled:     bool,
+    buckets: DashMap<String, Bucket>,
+    refill_rate: f64, // tokens per second
+    burst: f64,       // bucket capacity
+    enabled: bool,
 }
 
 impl RateLimiter {
     pub fn new(rpm: u32, burst: u32) -> Self {
         Self {
-            buckets:     DashMap::new(),
+            buckets: DashMap::new(),
             refill_rate: rpm as f64 / 60.0,
-            burst:       burst as f64,
-            enabled:     rpm > 0,
+            burst: burst as f64,
+            enabled: rpm > 0,
         }
     }
 
@@ -38,10 +38,11 @@ impl RateLimiter {
         }
 
         let now = Instant::now();
-        let mut entry = self.buckets
+        let mut entry = self
+            .buckets
             .entry(agent_id.to_string())
             .or_insert_with(|| Bucket {
-                tokens:      self.burst,
+                tokens: self.burst,
                 last_refill: now,
             });
 
@@ -85,7 +86,10 @@ mod tests {
         let rl = RateLimiter::new(60, 1);
         assert!(rl.check_and_consume("alice"));
         assert!(!rl.check_and_consume("alice"), "alice exhausted");
-        assert!(rl.check_and_consume("bob"),   "bob unaffected by alice's bucket");
+        assert!(
+            rl.check_and_consume("bob"),
+            "bob unaffected by alice's bucket"
+        );
     }
 
     #[test]
@@ -95,6 +99,9 @@ mod tests {
         assert!(rl.check_and_consume("r"));
         assert!(!rl.check_and_consume("r"));
         std::thread::sleep(std::time::Duration::from_millis(150));
-        assert!(rl.check_and_consume("r"), "should have refilled after 150 ms");
+        assert!(
+            rl.check_and_consume("r"),
+            "should have refilled after 150 ms"
+        );
     }
 }

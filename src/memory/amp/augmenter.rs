@@ -14,6 +14,8 @@ use super::pressure::PressureManager;
 /// Phase 2 will add pressure-based filtering: soft-evicted memories are
 /// removed from the candidate set entirely before scoring.
 pub struct RetrievalAugmenter {
+    // Reserved for Phase 2 pressure filtering; current scoring only uses co-access.
+    #[allow(dead_code)]
     pub pressure_manager: PressureManager,
     pub co_access_graph: CoAccessGraph,
     pub graph_bonus_weight: f64,
@@ -58,8 +60,7 @@ impl RetrievalAugmenter {
         similarities
             .iter()
             .map(|&(id, dist)| {
-                let bonus = weight_sums.get(&id).copied().unwrap_or(0.0)
-                    * self.graph_bonus_weight;
+                let bonus = weight_sums.get(&id).copied().unwrap_or(0.0) * self.graph_bonus_weight;
                 // Clamp to 0 so we never invert the distance ordering.
                 (id, (dist - bonus).max(0.0))
             })

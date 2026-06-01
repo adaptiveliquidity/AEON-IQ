@@ -313,8 +313,8 @@ export default function CognitionClient({
           Cognition Observability
         </h1>
         <p className="text-zinc-400 text-sm mt-1">
-          Timeline of retrievals, time-travel through memory state, diff between
-          two points in time, and a per-call recall debugger.
+          Retrieval timeline, time-travel through memory state, diff between two
+          points in time, and a per-call recall debugger.
         </p>
       </div>
 
@@ -346,7 +346,7 @@ export default function CognitionClient({
       <div className="flex gap-1 border-b border-zinc-800 pb-0 flex-wrap">
         {(
           [
-            { id: "timeline", label: "Timeline", icon: Activity },
+            { id: "timeline", label: "Retrieval Timeline", icon: Activity },
             { id: "time-travel", label: "Time Travel", icon: Rewind },
             { id: "diff", label: "Diff", icon: GitCompareArrows },
             { id: "recall", label: "Recall Debugger", icon: Brain },

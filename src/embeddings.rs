@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Result};
 use crate::AppState;
+use anyhow::{anyhow, Result};
 
 fn embeddings_url(state: &AppState) -> String {
     format!("{}/v1/embeddings", state.config.embedding_base_url)
@@ -53,7 +53,11 @@ pub async fn embed_texts(state: &AppState, texts: &[&str]) -> Result<Vec<Vec<f32
             let idx = item["index"].as_u64().unwrap_or(0) as usize;
             let vec = item["embedding"]
                 .as_array()
-                .map(|arr| arr.iter().map(|v| v.as_f64().unwrap_or(0.0) as f32).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+                        .collect()
+                })
                 .unwrap_or_default();
             (idx, vec)
         })

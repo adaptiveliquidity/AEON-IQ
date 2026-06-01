@@ -36,23 +36,32 @@ pub struct ArchivedBetweenRow {
     pub archived_at: DateTime<Utc>,
 }
 
+type MemoryVersionMeta = (
+    String,
+    String,
+    f32,
+    String,
+    f32,
+    String,
+    String,
+    String,
+    Option<i32>,
+);
+
 // ── Agent ─────────────────────────────────────────────────────────────────────
 
 pub async fn upsert_agent(state: &AppState, agent_id: &str) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO agents (agent_id) VALUES ($1) ON CONFLICT (agent_id) DO NOTHING",
-    )
-    .bind(agent_id)
-    .execute(&state.db)
-    .await?;
+    sqlx::query("INSERT INTO agents (agent_id) VALUES ($1) ON CONFLICT (agent_id) DO NOTHING")
+        .bind(agent_id)
+        .execute(&state.db)
+        .await?;
     Ok(())
 }
 
 pub async fn count_agents(state: &AppState) -> Result<i64> {
-    let row: (i64,) =
-        sqlx::query_as("SELECT COUNT(*)::bigint FROM agents")
-            .fetch_one(&state.db)
-            .await?;
+    let row: (i64,) = sqlx::query_as("SELECT COUNT(*)::bigint FROM agents")
+        .fetch_one(&state.db)
+        .await?;
     Ok(row.0)
 }
 
@@ -115,9 +124,7 @@ pub async fn store_memory(
     // return the existing ID (bumping its confidence if the new value is higher).
     if state.config.dedup_threshold > 0.0 {
         let vec = Vector::from(embedding.clone());
-        let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
-            "WITH q AS (SELECT ",
-        );
+        let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new("WITH q AS (SELECT ");
         qb.push_bind(vec);
         qb.push(
             " AS vec) \
@@ -191,28 +198,29 @@ pub async fn store_memory(
 ///
 /// `change_type` should be one of: "initial", "patch", "status_change".
 /// Called inside transactions in store_memory_with_tier and update_memory_content.
-async fn create_memory_version(
-    pool: &sqlx::PgPool,
+struct MemoryVersionInput<'a> {
     memory_id: Uuid,
-    agent_id: &str,
-    content: &str,
-    memory_type: &str,
+    agent_id: &'a str,
+    content: &'a str,
+    memory_type: &'a str,
     confidence: f32,
-    provenance: &str,
+    provenance: &'a str,
     importance_score: f32,
-    importance_source: &str,
-    status: &str,
-    sensitivity: &str,
+    importance_source: &'a str,
+    status: &'a str,
+    sensitivity: &'a str,
     source_turn: Option<i32>,
-    change_type: &str,
-    change_reason: Option<&str>,
-) -> Result<()> {
+    change_type: &'a str,
+    change_reason: Option<&'a str>,
+}
+
+async fn create_memory_version(pool: &sqlx::PgPool, input: MemoryVersionInput<'_>) -> Result<()> {
     // Compute next version number atomically.
     let next_ver: i64 = sqlx::query_scalar(
         "SELECT COALESCE(MAX(version_number), 0) + 1
          FROM memory_versions WHERE memory_id = $1",
     )
-    .bind(memory_id)
+    .bind(input.memory_id)
     .fetch_one(pool)
     .await?;
 
@@ -225,20 +233,20 @@ async fn create_memory_version(
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'system')
         "#,
     )
-    .bind(memory_id)
-    .bind(agent_id)
+    .bind(input.memory_id)
+    .bind(input.agent_id)
     .bind(next_ver as i32)
-    .bind(content)
-    .bind(memory_type)
-    .bind(confidence)
-    .bind(provenance)
-    .bind(importance_score)
-    .bind(importance_source)
-    .bind(status)
-    .bind(sensitivity)
-    .bind(source_turn)
-    .bind(change_type)
-    .bind(change_reason)
+    .bind(input.content)
+    .bind(input.memory_type)
+    .bind(input.confidence)
+    .bind(input.provenance)
+    .bind(input.importance_score)
+    .bind(input.importance_source)
+    .bind(input.status)
+    .bind(input.sensitivity)
+    .bind(input.source_turn)
+    .bind(input.change_type)
+    .bind(input.change_reason)
     .execute(pool)
     .await?;
     Ok(())
@@ -338,7 +346,7 @@ pub async fn search_memories(
 ///
 /// Three-factor scoring:
 ///   `adjusted_dist = cosine_dist
-///       * (1 + decay_rate * days_stale)
+///       * exp(decay_rate * days_stale)
 ///       * (1 + importance_boost * (1 - importance_score))`
 /// When `decay_rate = 0.0` and `importance_boost = 0.0` (defaults) the formula
 /// collapses to pure cosine similarity.
@@ -783,34 +791,44 @@ pub async fn update_memory_content(
     }
 
     // Fetch current meta to snapshot in the version row.
-    let meta: Option<(String, String, f32, String, f32, String, String, String, Option<i32>)> =
-        sqlx::query_as(
-            "SELECT agent_id, memory_type, confidence, provenance,
+    let meta: Option<MemoryVersionMeta> = sqlx::query_as(
+        "SELECT agent_id, memory_type, confidence, provenance,
                     importance_score, importance_source, status, sensitivity, source_turn
              FROM memories WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await?;
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
 
-    if let Some((agent_id, memory_type, confidence, provenance, importance_score,
-                 importance_source, status, sensitivity, source_turn)) = meta
+    if let Some((
+        agent_id,
+        memory_type,
+        confidence,
+        provenance,
+        importance_score,
+        importance_source,
+        status,
+        sensitivity,
+        source_turn,
+    )) = meta
     {
         create_memory_version(
             &state.db,
-            id,
-            &agent_id,
-            content,
-            &memory_type,
-            confidence,
-            &provenance,
-            importance_score,
-            &importance_source,
-            &status,
-            &sensitivity,
-            source_turn,
-            "patch",
-            None,
+            MemoryVersionInput {
+                memory_id: id,
+                agent_id: &agent_id,
+                content,
+                memory_type: &memory_type,
+                confidence,
+                provenance: &provenance,
+                importance_score,
+                importance_source: &importance_source,
+                status: &status,
+                sensitivity: &sensitivity,
+                source_turn,
+                change_type: "patch",
+                change_reason: None,
+            },
         )
         .await?;
     }
@@ -853,9 +871,7 @@ pub async fn upsert_working_memory(
     summary: &str,
     structured_state: Option<&crate::models::WorkingMemoryState>,
 ) -> Result<()> {
-    let state_json = structured_state
-        .map(|s| serde_json::to_value(s))
-        .transpose()?;
+    let state_json = structured_state.map(serde_json::to_value).transpose()?;
 
     sqlx::query(
         r#"
@@ -930,13 +946,11 @@ pub async fn delete_session_working_memory(
     agent_id: &str,
     session_id: &str,
 ) -> Result<bool> {
-    let r = sqlx::query(
-        "DELETE FROM working_memory WHERE agent_id = $1 AND session_id = $2",
-    )
-    .bind(agent_id)
-    .bind(session_id)
-    .execute(&state.db)
-    .await?;
+    let r = sqlx::query("DELETE FROM working_memory WHERE agent_id = $1 AND session_id = $2")
+        .bind(agent_id)
+        .bind(session_id)
+        .execute(&state.db)
+        .await?;
     Ok(r.rows_affected() > 0)
 }
 
@@ -1042,9 +1056,8 @@ pub async fn walk_graph_for_entities(
     let lower_names: Vec<String> = entity_names.iter().map(|n| n.to_lowercase()).collect();
 
     // Two-direction UNION: object side of matching subjects + subject side of matching objects
-    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
-        "SELECT DISTINCT subject AS name FROM memory_graph WHERE agent_id = ",
-    );
+    let mut qb: QueryBuilder<sqlx::Postgres> =
+        QueryBuilder::new("SELECT DISTINCT subject AS name FROM memory_graph WHERE agent_id = ");
     qb.push_bind(agent_id);
     qb.push(" AND LOWER(object) IN (");
     let mut sep = qb.separated(", ");
@@ -1278,9 +1291,8 @@ pub async fn tombstone_memories_with_batch(
     if ids.is_empty() {
         return Ok(0);
     }
-    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
-        "UPDATE memories SET archived_at = NOW(), archival_batch_id = ",
-    );
+    let mut qb: QueryBuilder<sqlx::Postgres> =
+        QueryBuilder::new("UPDATE memories SET archived_at = NOW(), archival_batch_id = ");
     qb.push_bind(batch_id);
     qb.push(" WHERE id IN (");
     let mut sep = qb.separated(", ");
@@ -1411,7 +1423,9 @@ pub async fn bulk_operation_memories(
     importance_below: Option<f32>,
 ) -> Result<u64> {
     let mut qb: QueryBuilder<sqlx::Postgres> = if action == "archive" {
-        QueryBuilder::new("UPDATE memories SET archived_at = NOW() WHERE archived_at IS NULL AND agent_id = ")
+        QueryBuilder::new(
+            "UPDATE memories SET archived_at = NOW() WHERE archived_at IS NULL AND agent_id = ",
+        )
     } else {
         QueryBuilder::new("DELETE FROM memories WHERE archived_at IS NULL AND agent_id = ")
     };
@@ -1520,9 +1534,7 @@ pub async fn resolve_conflict(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        config::Config, metrics::Metrics, providers::Provider, rate_limit::RateLimiter,
-    };
+    use crate::{config::Config, metrics::Metrics, providers::Provider, rate_limit::RateLimiter};
     use std::sync::Arc;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -1547,7 +1559,11 @@ mod tests {
         build_state_with_importance(pool, decay_rate, 0.0)
     }
 
-    fn build_state_with_importance(pool: sqlx::PgPool, decay_rate: f64, importance_boost_factor: f64) -> crate::AppState {
+    fn build_state_with_importance(
+        pool: sqlx::PgPool,
+        decay_rate: f64,
+        importance_boost_factor: f64,
+    ) -> crate::AppState {
         crate::AppState {
             config: Arc::new(Config {
                 database_url: String::new(),
@@ -1599,9 +1615,17 @@ mod tests {
         const AGENT: &str = "prov-agent";
 
         let id = store_memory(
-            &state, AGENT, None, "user stated a fact",
-            "episodic", 0.85, unit_vec(0), None, "user_stated",
-            0.5_f32, "extractor",
+            &state,
+            AGENT,
+            None,
+            "user stated a fact",
+            "episodic",
+            0.85,
+            unit_vec(0),
+            None,
+            "user_stated",
+            0.5_f32,
+            "extractor",
         )
         .await
         .unwrap();
@@ -1609,7 +1633,11 @@ mod tests {
         let rows = list_memories_for_agent(&state, AGENT, 10, 0).await.unwrap();
         let m = rows.iter().find(|r| r.id == id).unwrap();
         assert_eq!(m.provenance, "user_stated");
-        assert!((m.confidence - 0.85).abs() < 1e-5, "confidence mismatch: {}", m.confidence);
+        assert!(
+            (m.confidence - 0.85).abs() < 1e-5,
+            "confidence mismatch: {}",
+            m.confidence
+        );
     }
 
     // ── Tombstone ─────────────────────────────────────────────────────────────
@@ -1621,9 +1649,17 @@ mod tests {
         const AGENT: &str = "tomb-agent";
 
         let id = store_memory(
-            &state, AGENT, None, "soon to be tombstoned",
-            "episodic", 0.9, unit_vec(0), None, "user_stated",
-            0.5_f32, "extractor",
+            &state,
+            AGENT,
+            None,
+            "soon to be tombstoned",
+            "episodic",
+            0.9,
+            unit_vec(0),
+            None,
+            "user_stated",
+            0.5_f32,
+            "extractor",
         )
         .await
         .unwrap();
@@ -1640,10 +1676,16 @@ mod tests {
         let after = search_memories_filtered(&state, AGENT, &unit_vec(0), 5, 0.01, None, None)
             .await
             .unwrap();
-        assert!(after.is_empty(), "tombstoned memory must be excluded from search");
+        assert!(
+            after.is_empty(),
+            "tombstoned memory must be excluded from search"
+        );
 
         let listed = list_memories_for_agent(&state, AGENT, 10, 0).await.unwrap();
-        assert!(listed.is_empty(), "tombstoned memory must be excluded from list");
+        assert!(
+            listed.is_empty(),
+            "tombstoned memory must be excluded from list"
+        );
     }
 
     // ── 20-turn retention ─────────────────────────────────────────────────────
@@ -1657,18 +1699,34 @@ mod tests {
 
         // Turn 3: key fact — embedding lives at dim 0
         store_memory(
-            &state, AGENT, Some("s1"), "Alex is building NovaPay",
-            "episodic", 0.95, unit_vec(0), Some(3), "user_stated",
-            0.5_f32, "extractor",
+            &state,
+            AGENT,
+            Some("s1"),
+            "Alex is building NovaPay",
+            "episodic",
+            0.95,
+            unit_vec(0),
+            Some(3),
+            "user_stated",
+            0.5_f32,
+            "extractor",
         )
         .await
         .unwrap();
 
         // Turn 5: second key fact — embedding at dim 1
         store_memory(
-            &state, AGENT, Some("s1"), "NovaPay processes cross-border payments",
-            "semantic", 0.95, unit_vec(1), Some(5), "user_stated",
-            0.5_f32, "extractor",
+            &state,
+            AGENT,
+            Some("s1"),
+            "NovaPay processes cross-border payments",
+            "semantic",
+            0.95,
+            unit_vec(1),
+            Some(5),
+            "user_stated",
+            0.5_f32,
+            "extractor",
         )
         .await
         .unwrap();
@@ -1676,23 +1734,26 @@ mod tests {
         // Turns 1-2, 4, 6-20: noise in unrelated dimensions
         for turn in (1i32..=20).filter(|&t| t != 3 && t != 5) {
             store_memory(
-                &state, AGENT, Some("s1"),
+                &state,
+                AGENT,
+                Some("s1"),
                 &format!("Noise chatter at turn {}", turn),
-                "episodic", 0.80,
+                "episodic",
+                0.80,
                 unit_vec(((turn as usize) % 1500) + 20),
                 Some(turn),
                 "assistant_derived",
-                0.5_f32, "extractor",
+                0.5_f32,
+                "extractor",
             )
             .await
             .unwrap();
         }
 
         // At turn 20: query using the NovaPay vector (dim 0, exact match)
-        let results =
-            search_memories_filtered(&state, AGENT, &unit_vec(0), 5, 0.10, None, None)
-                .await
-                .unwrap();
+        let results = search_memories_filtered(&state, AGENT, &unit_vec(0), 5, 0.10, None, None)
+            .await
+            .unwrap();
 
         assert_eq!(results.len(), 1, "should find exactly the NovaPay fact");
         assert!(
@@ -1711,9 +1772,9 @@ mod tests {
     //   stale  = [0.9, 0.0,  0.4359, ...]  cosine dist ≈ 0.10 from query
     //
     // Without decay: stale ranks first (lower cosine dist 0.10 < 0.20).
-    // With decay_rate=0.5 and stale aged 30 days:
-    //   adjusted_dist(stale) = 0.10 * (1 + 0.5 * 30) = 1.60
-    //   adjusted_dist(fresh) = 0.20 * (1 + 0)        = 0.20  ← wins
+    // With exponential decay_rate=0.05 and stale aged 30 days:
+    //   adjusted_dist(stale) = 0.10 * exp(0.05 * 30) ≈ 0.45
+    //   adjusted_dist(fresh) = 0.20 * exp(0)         = 0.20  ← wins
 
     #[sqlx::test(migrations = "./migrations")]
     async fn decay_reorders_stale_memories(pool: sqlx::PgPool) {
@@ -1726,16 +1787,32 @@ mod tests {
         let stale_id = {
             let state = build_state(pool.clone(), 0.0);
             store_memory(
-                &state, AGENT, None, "fresh fact",
-                "episodic", 0.9, fresh_emb, None, "user_stated",
-                0.5_f32, "extractor",
+                &state,
+                AGENT,
+                None,
+                "fresh fact",
+                "episodic",
+                0.9,
+                fresh_emb,
+                None,
+                "user_stated",
+                0.5_f32,
+                "extractor",
             )
             .await
             .unwrap();
             store_memory(
-                &state, AGENT, None, "stale fact",
-                "episodic", 0.9, stale_emb, None, "user_stated",
-                0.5_f32, "extractor",
+                &state,
+                AGENT,
+                None,
+                "stale fact",
+                "episodic",
+                0.9,
+                stale_emb,
+                None,
+                "user_stated",
+                0.5_f32,
+                "extractor",
             )
             .await
             .unwrap()
@@ -1761,8 +1838,8 @@ mod tests {
             "without decay: lower cosine dist should rank first"
         );
 
-        // With decay (rate 0.5): stale adjusted dist = 1.60, fresh = 0.20
-        let with_decay = build_state(pool, 0.5);
+        // With exponential decay (rate 0.05): stale adjusted dist ≈ 0.45, fresh = 0.20
+        let with_decay = build_state(pool, 0.05);
         let results = search_memories_filtered(&with_decay, AGENT, &query, 2, 5.0, None, None)
             .await
             .unwrap();
@@ -1792,28 +1869,56 @@ mod tests {
         {
             let state = build_state(pool.clone(), 0.0);
             store_memory(
-                &state, AGENT, None, "high importance fact", "episodic", 0.9,
-                emb_hi, None, "user_stated", 0.9_f32, "user_stated",
-            ).await.unwrap();
+                &state,
+                AGENT,
+                None,
+                "high importance fact",
+                "episodic",
+                0.9,
+                emb_hi,
+                None,
+                "user_stated",
+                0.9_f32,
+                "user_stated",
+            )
+            .await
+            .unwrap();
             store_memory(
-                &state, AGENT, None, "low importance fact", "episodic", 0.9,
-                emb_lo, None, "user_stated", 0.1_f32, "extractor",
-            ).await.unwrap();
+                &state,
+                AGENT,
+                None,
+                "low importance fact",
+                "episodic",
+                0.9,
+                emb_lo,
+                None,
+                "user_stated",
+                0.1_f32,
+                "extractor",
+            )
+            .await
+            .unwrap();
         }
 
         // Without importance boost: both have same adjusted dist — both present
         {
             let state = build_state(pool.clone(), 0.0);
             let results = search_memories_filtered(&state, AGENT, &query, 2, 1.0, None, None)
-                .await.unwrap();
-            assert_eq!(results.len(), 2, "both facts should be returned without boost");
+                .await
+                .unwrap();
+            assert_eq!(
+                results.len(),
+                2,
+                "both facts should be returned without boost"
+            );
         }
 
         // With importance boost=2.0: high-importance should rank first
         {
             let state = build_state_with_importance(pool.clone(), 0.0, 2.0);
             let results = search_memories_filtered(&state, AGENT, &query, 2, 5.0, None, None)
-                .await.unwrap();
+                .await
+                .unwrap();
             assert_eq!(results.len(), 2, "both facts should be returned with boost");
             assert_eq!(
                 results[0].content, "high importance fact",
@@ -1840,39 +1945,93 @@ mod tests {
         upsert_agent(&state, AGENT).await.unwrap();
 
         let id_a = store_memory(
-            &state, AGENT, None, "L2 fact A",
-            "episodic", 0.9, unit_vec(0), None, "user_stated", 0.5, "extractor",
-        ).await.unwrap();
+            &state,
+            AGENT,
+            None,
+            "L2 fact A",
+            "episodic",
+            0.9,
+            unit_vec(0),
+            None,
+            "user_stated",
+            0.5,
+            "extractor",
+        )
+        .await
+        .unwrap();
         let id_b = store_memory(
-            &state, AGENT, None, "L2 fact B",
-            "episodic", 0.9, unit_vec(1), None, "user_stated", 0.5, "extractor",
-        ).await.unwrap();
+            &state,
+            AGENT,
+            None,
+            "L2 fact B",
+            "episodic",
+            0.9,
+            unit_vec(1),
+            None,
+            "user_stated",
+            0.5,
+            "extractor",
+        )
+        .await
+        .unwrap();
 
         // Both L2 memories are live
         let before = list_memories_for_agent(&state, AGENT, 10, 0).await.unwrap();
-        assert_eq!(before.len(), 2, "both L2 facts should be live before archival");
+        assert_eq!(
+            before.len(),
+            2,
+            "both L2 facts should be live before archival"
+        );
 
         let batch_id = create_archival_batch(&state, AGENT, 2, 2).await.unwrap();
 
         // Tombstone L2 memories with batch
-        tombstone_memories_with_batch(&state, &[id_a, id_b], batch_id).await.unwrap();
+        tombstone_memories_with_batch(&state, &[id_a, id_b], batch_id)
+            .await
+            .unwrap();
 
         // Store L3 compressed facts tagged with the same batch
         let l3_a = store_memory_with_tier(
-            &state, AGENT, None, "L3 compressed fact A",
-            "semantic", 0.7, unit_vec(10), None, "L3", "inferred", 0.5, "extractor",
+            &state,
+            AGENT,
+            None,
+            "L3 compressed fact A",
+            "semantic",
+            0.7,
+            unit_vec(10),
+            None,
+            "L3",
+            "inferred",
+            0.5,
+            "extractor",
             Some(batch_id),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
         let l3_b = store_memory_with_tier(
-            &state, AGENT, None, "L3 compressed fact B",
-            "semantic", 0.7, unit_vec(11), None, "L3", "inferred", 0.5, "extractor",
+            &state,
+            AGENT,
+            None,
+            "L3 compressed fact B",
+            "semantic",
+            0.7,
+            unit_vec(11),
+            None,
+            "L3",
+            "inferred",
+            0.5,
+            "extractor",
             Some(batch_id),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         // L2 memories excluded after tombstone
         let after_archival = list_memories_for_agent(&state, AGENT, 10, 0).await.unwrap();
         assert!(
-            after_archival.iter().all(|m| !["L2 fact A", "L2 fact B"].contains(&m.content.as_str())),
+            after_archival
+                .iter()
+                .all(|m| !["L2 fact A", "L2 fact B"].contains(&m.content.as_str())),
             "tombstoned L2 facts must not appear in live list"
         );
 
@@ -1885,8 +2044,14 @@ mod tests {
         // L2 memories are live again
         let after_restore = list_memories_for_agent(&state, AGENT, 10, 0).await.unwrap();
         let contents: Vec<&str> = after_restore.iter().map(|m| m.content.as_str()).collect();
-        assert!(contents.contains(&"L2 fact A"), "L2 fact A must be live after restore");
-        assert!(contents.contains(&"L2 fact B"), "L2 fact B must be live after restore");
+        assert!(
+            contents.contains(&"L2 fact A"),
+            "L2 fact A must be live after restore"
+        );
+        assert!(
+            contents.contains(&"L2 fact B"),
+            "L2 fact B must be live after restore"
+        );
 
         // L3 facts are tombstoned (not in live list)
         assert!(
@@ -1908,16 +2073,42 @@ mod tests {
         upsert_agent(&state, AGENT).await.unwrap();
 
         let id = store_memory(
-            &state, AGENT, None, "L2 memory",
-            "episodic", 0.9, unit_vec(0), None, "user_stated", 0.5, "extractor",
-        ).await.unwrap();
+            &state,
+            AGENT,
+            None,
+            "L2 memory",
+            "episodic",
+            0.9,
+            unit_vec(0),
+            None,
+            "user_stated",
+            0.5,
+            "extractor",
+        )
+        .await
+        .unwrap();
 
         let batch_id = create_archival_batch(&state, AGENT, 1, 1).await.unwrap();
-        tombstone_memories_with_batch(&state, &[id], batch_id).await.unwrap();
+        tombstone_memories_with_batch(&state, &[id], batch_id)
+            .await
+            .unwrap();
         store_memory_with_tier(
-            &state, AGENT, None, "L3 fact", "semantic", 0.7,
-            unit_vec(5), None, "L3", "inferred", 0.5, "extractor", Some(batch_id),
-        ).await.unwrap();
+            &state,
+            AGENT,
+            None,
+            "L3 fact",
+            "semantic",
+            0.7,
+            unit_vec(5),
+            None,
+            "L3",
+            "inferred",
+            0.5,
+            "extractor",
+            Some(batch_id),
+        )
+        .await
+        .unwrap();
 
         // First restore succeeds
         let first = restore_archival_batch(&state, batch_id).await.unwrap();
@@ -1925,6 +2116,9 @@ mod tests {
 
         // Second restore returns None (already restored)
         let second = restore_archival_batch(&state, batch_id).await.unwrap();
-        assert!(second.is_none(), "restoring an already-restored batch must return None");
+        assert!(
+            second.is_none(),
+            "restoring an already-restored batch must return None"
+        );
     }
 }

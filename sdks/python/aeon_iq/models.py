@@ -23,8 +23,8 @@ class Memory:
     provenance: str
     created_at: datetime
     updated_at: Optional[datetime] = None
-    importance_score: float
-    importance_source: str
+    importance_score: float = 0.5
+    importance_source: str = "extractor"
     session_id: Optional[str] = None
     source_turn: Optional[int] = None
     status: Optional[str] = None

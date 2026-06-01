@@ -4,11 +4,7 @@ use tracing::{info, warn};
 
 use crate::{
     memory::{
-        amp::{
-            co_access::CoAccessGraph,
-            pi_controller::PIController,
-            pressure::PressureManager,
-        },
+        amp::{co_access::CoAccessGraph, pi_controller::PIController, pressure::PressureManager},
         rmk::{meta_learner::MetaLearner, policy::PolicyParams, store},
     },
     AppState,
@@ -27,9 +23,7 @@ pub async fn run_policy_update_job(state: AppState) {
 
     info!(
         cooldown_secs = cooldown,
-        min_episodes,
-        epsilon,
-        "RMK policy-update worker started"
+        min_episodes, epsilon, "RMK policy-update worker started"
     );
 
     loop {
@@ -44,8 +38,7 @@ pub async fn run_policy_update_job(state: AppState) {
         };
 
         for agent_id in agents {
-            if let Err(e) =
-                update_policy_for_agent(&state, &agent_id, min_episodes, epsilon).await
+            if let Err(e) = update_policy_for_agent(&state, &agent_id, min_episodes, epsilon).await
             {
                 warn!(agent_id = %agent_id, "RMK: policy update error: {}", e);
             }
@@ -140,8 +133,7 @@ async fn run_pressure_sweep_for_agent(state: &AppState, agent_id: &str) -> anyho
     // Fresh PI controller per sweep — acceptable for Phase 1; integral_error
     // will re-converge within a few cycles.
     let mut pi = PIController::new(controller_params);
-    let (threshold_high, threshold_low) =
-        pi.update(current_count as u64, target, 1.0);
+    let (threshold_high, threshold_low) = pi.update(current_count as u64, target, 1.0);
 
     // Fetch all non-archived memories (including currently soft-evicted ones so we
     // can restore them) with the pressure-relevant columns.

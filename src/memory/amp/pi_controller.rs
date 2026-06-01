@@ -39,7 +39,7 @@ impl PIController {
             let saturated_low = self.aggressiveness <= 0.0;
             // Anti-windup: don't accumulate integral when already saturated in
             // the same direction as the error.
-            if !(saturated_high && error > 0.0) && !(saturated_low && error < 0.0) {
+            if !(saturated_high && error > 0.0 || saturated_low && error < 0.0) {
                 self.integral_error += error * dt;
                 self.integral_error = self.integral_error.clamp(-10.0, 10.0);
             }

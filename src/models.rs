@@ -1,6 +1,6 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 // ── OpenAI-compatible wire types (Issue 5) ────────────────────────────────────
 //
@@ -29,7 +29,9 @@ impl MessageContent {
                 .iter()
                 .filter_map(|p| {
                     if p.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        p.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                        p.get("text")
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string())
                     } else {
                         None
                     }
@@ -41,10 +43,14 @@ impl MessageContent {
 }
 
 impl From<String> for MessageContent {
-    fn from(s: String) -> Self { Self::Text(s) }
+    fn from(s: String) -> Self {
+        Self::Text(s)
+    }
 }
 impl From<&str> for MessageContent {
-    fn from(s: &str) -> Self { Self::Text(s.to_string()) }
+    fn from(s: &str) -> Self {
+        Self::Text(s.to_string())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,7 +63,11 @@ pub struct Message {
 
 impl Message {
     pub fn system(content: impl Into<MessageContent>) -> Self {
-        Self { role: "system".to_string(), content: content.into(), name: None }
+        Self {
+            role: "system".to_string(),
+            content: content.into(),
+            name: None,
+        }
     }
 
     pub fn content_text(&self) -> String {
@@ -205,6 +215,7 @@ pub struct WorkingMemoryState {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SessionInfo {
     pub session_id: String,
+    #[allow(dead_code)]
     pub agent_id: String,
     pub turn_count: i32,
     pub updated_at: DateTime<Utc>,
@@ -215,6 +226,7 @@ pub struct SessionInfo {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct MemoryConflict {
     pub id: Uuid,
+    #[allow(dead_code)]
     pub agent_id: String,
     pub memory_a: Option<Uuid>,
     pub memory_b: Option<Uuid>,
@@ -251,7 +263,7 @@ pub struct ExtractedFact {
     /// Line number in the numbered transcript where this fact is cited.
     pub cited_line: Option<u32>,
     pub confidence: f64,
-    pub importance_score: Option<f64>,   // 0.0–1.0; None → default 0.5
+    pub importance_score: Option<f64>, // 0.0–1.0; None → default 0.5
     pub importance_source: Option<String>, // 'extractor' | 'user_stated' | 'agent_marked'
 }
 

@@ -10,11 +10,33 @@ ALTER TABLE memories
     ADD COLUMN IF NOT EXISTS suppression_reason TEXT,
     ADD COLUMN IF NOT EXISTS status_updated_at  TIMESTAMPTZ DEFAULT NOW();
 
-ALTER TABLE memories
-    ADD CONSTRAINT IF NOT EXISTS chk_memory_status
-        CHECK (status IN ('active', 'candidate', 'quarantined', 'suppressed')),
-    ADD CONSTRAINT IF NOT EXISTS chk_memory_sensitivity
-        CHECK (sensitivity IN ('unknown', 'normal', 'private', 'sensitive', 'secret'));
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_memory_status'
+          AND conrelid = 'memories'::regclass
+    ) THEN
+        ALTER TABLE memories
+            ADD CONSTRAINT chk_memory_status
+            CHECK (status IN ('active', 'candidate', 'quarantined', 'suppressed'));
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_memory_sensitivity'
+          AND conrelid = 'memories'::regclass
+    ) THEN
+        ALTER TABLE memories
+            ADD CONSTRAINT chk_memory_sensitivity
+            CHECK (sensitivity IN ('unknown', 'normal', 'private', 'sensitive', 'secret'));
+    END IF;
+END $$;
 
 -- Partial index for the hot retrieval path: live, active memories only.
 CREATE INDEX IF NOT EXISTS idx_memories_active

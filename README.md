@@ -367,6 +367,7 @@ Open **http://localhost:3000** after `docker compose up`.
   - **Archived** tab — view tombstoned memories; restore individuals with one click
   - **Batch History** — every L2→L3 compaction run with full restore support
 - **Knowledge Graph** — entity/relation graph extracted from conversations
+- **Cognition** — retrieval timeline, temporal snapshots, memory diffs, and recall debugging; a full memory lifecycle timeline remains future work
 - **Metrics** — Prometheus-backed usage charts (requests, extraction rate, retrieval hits)
 
 Default credentials: `admin@memoryos.dev` / `changeme` (set `DASHBOARD_ADMIN_EMAIL` and `DASHBOARD_ADMIN_PASSWORD`).

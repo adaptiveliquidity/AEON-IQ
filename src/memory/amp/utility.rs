@@ -3,10 +3,12 @@
 /// The EMA smooths noisy per-retrieval feedback signals into a stable
 /// utility estimate.  Higher alpha values make the EMA more responsive
 /// to recent feedback; lower values give more weight to historical data.
+#[allow(dead_code)]
 pub struct UtilityTracker {
     pub alpha: f64,
 }
 
+#[allow(dead_code)]
 impl UtilityTracker {
     pub fn new(alpha: f64) -> Self {
         Self { alpha }

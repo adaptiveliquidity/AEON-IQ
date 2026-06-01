@@ -48,8 +48,7 @@ struct CompactionOutput {
 
 pub async fn run_job(state: AppState) {
     let interval_secs = state.config.archival_interval_hours * 3600;
-    let mut ticker =
-        tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
 
     // Skip the first immediate tick so the job waits a full interval before
     // its first run (prevents stampede on startup).
@@ -90,8 +89,8 @@ async fn run_cycle(state: &AppState) -> Result<()> {
             Ok(Some(r)) => info!(agent_id = %agent_id, batch = %r.batch_id,
                 source = r.source_count, l3 = r.l3_count,
                 narrative = r.narrative_count, "Archival complete"),
-            Ok(None)    => {},
-            Err(e)      => warn!(agent_id = %agent_id, "Per-agent archival failed: {}", e),
+            Ok(None) => {}
+            Err(e) => warn!(agent_id = %agent_id, "Per-agent archival failed: {}", e),
         }
     }
     Ok(())
@@ -142,17 +141,11 @@ pub async fn archive_agent(
     let narrative_count = if narrative_text.is_some() { 1 } else { 0 };
     let stored_l3_count = fact_count + narrative_count;
 
-    let batch_id = store::create_archival_batch(
-        state,
-        agent_id,
-        count as i32,
-        stored_l3_count as i32,
-    )
-    .await?;
+    let batch_id =
+        store::create_archival_batch(state, agent_id, count as i32, stored_l3_count as i32).await?;
 
     // ── Batch-embed all compressed facts (and narrative, if present) ─────────
-    let mut texts_to_embed: Vec<&str> =
-        compaction.facts.iter().map(|s| s.as_str()).collect();
+    let mut texts_to_embed: Vec<&str> = compaction.facts.iter().map(|s| s.as_str()).collect();
     if let Some(n) = narrative_text.as_deref() {
         texts_to_embed.push(n);
     }
@@ -232,10 +225,7 @@ pub async fn archive_agent(
     let ids: Vec<uuid::Uuid> = candidates.iter().map(|(id, _)| *id).collect();
     let tombstoned = store::tombstone_memories_with_batch(state, &ids, batch_id).await?;
 
-    state
-        .metrics
-        .archival_compacted
-        .observe(tombstoned as f64);
+    state.metrics.archival_compacted.observe(tombstoned as f64);
     if narrative_stored > 0 {
         state.metrics.narrative_total.inc();
     }
@@ -261,10 +251,7 @@ pub async fn archive_agent(
 
 // ── LLM compaction call ───────────────────────────────────────────────────────
 
-async fn call_compaction_llm(
-    state: &AppState,
-    numbered: &[String],
-) -> Result<CompactionOutput> {
+async fn call_compaction_llm(state: &AppState, numbered: &[String]) -> Result<CompactionOutput> {
     let prompt = format!(
         "You are compressing {} stale memory facts for long-term storage.\n\
          Return ONLY a JSON object with two keys:\n\
@@ -300,10 +287,7 @@ async fn call_compaction_llm(
         .await?;
 
     if !resp.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "Compaction LLM returned {}",
-            resp.status()
-        ));
+        return Err(anyhow::anyhow!("Compaction LLM returned {}", resp.status()));
     }
 
     let body: serde_json::Value = resp.json().await?;
@@ -319,7 +303,10 @@ async fn call_compaction_llm(
 fn strip_code_fences(s: &str) -> &str {
     // Some models wrap JSON in ```json ... ``` even with response_format set.
     let s = s.trim();
-    let s = s.strip_prefix("```json").or_else(|| s.strip_prefix("```")).unwrap_or(s);
+    let s = s
+        .strip_prefix("```json")
+        .or_else(|| s.strip_prefix("```"))
+        .unwrap_or(s);
     s.trim_end_matches("```").trim()
 }
 
@@ -334,7 +321,10 @@ fn parse_compaction_output(raw: &str) -> CompactionOutput {
     let mut out = CompactionOutput::default();
 
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
-        let arr = v.get("facts").and_then(|x| x.as_array()).or_else(|| v.as_array());
+        let arr = v
+            .get("facts")
+            .and_then(|x| x.as_array())
+            .or_else(|| v.as_array());
         if let Some(arr) = arr {
             out.facts = arr
                 .iter()
@@ -358,7 +348,8 @@ mod tests {
 
     #[test]
     fn parse_facts_from_object_key() {
-        let raw = r#"{"facts": ["Alex is building NovaPay", "NovaPay does cross-border payments"]}"#;
+        let raw =
+            r#"{"facts": ["Alex is building NovaPay", "NovaPay does cross-border payments"]}"#;
         let facts = parse_compressed_facts(raw);
         assert_eq!(facts.len(), 2);
         assert_eq!(facts[0], "Alex is building NovaPay");
@@ -418,7 +409,10 @@ mod tests {
     fn parse_compaction_empty_narrative_is_none() {
         let raw = r#"{"facts": ["F"], "narrative": "   "}"#;
         let out = parse_compaction_output(raw);
-        assert!(out.narrative.is_none(), "blank narrative must be normalised to None");
+        assert!(
+            out.narrative.is_none(),
+            "blank narrative must be normalised to None"
+        );
     }
 
     #[test]

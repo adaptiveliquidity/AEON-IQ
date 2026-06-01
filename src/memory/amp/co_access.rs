@@ -64,6 +64,7 @@ impl CoAccessGraph {
 
     /// Return the capped sum of co-access weights for the top-N neighbours of
     /// `memory_id`.  Used to compute the co-access bonus during retrieval.
+    #[allow(dead_code)]
     pub async fn get_neighbor_weight_sum(&self, memory_id: Uuid) -> f64 {
         let sum: f64 = sqlx::query_scalar(
             "SELECT COALESCE(SUM(weight), 0.0)
@@ -91,10 +92,7 @@ impl CoAccessGraph {
     /// Edges are undirected so each side is counted separately via UNION ALL.
     /// IDs not present in `co_access_edges` are omitted from the result (the
     /// caller should treat missing entries as 0.0).
-    pub async fn get_neighbor_weight_sums(
-        &self,
-        memory_ids: &[Uuid],
-    ) -> HashMap<Uuid, f64> {
+    pub async fn get_neighbor_weight_sums(&self, memory_ids: &[Uuid]) -> HashMap<Uuid, f64> {
         if memory_ids.is_empty() {
             return HashMap::new();
         }
