@@ -161,9 +161,21 @@ pub async fn retrieve_relevant(
     }
 
     // Bump access counts asynchronously so the hot path is never delayed.
+    // When AMP or RMK is active, also update utility_ema in a single batch SQL
+    // statement: feedback=1.0 means "this memory was retrieved and injected".
     if !memories.is_empty() {
         let ids: Vec<uuid::Uuid> = memories.iter().map(|m| m.id).collect();
-        tokio::spawn(store::bump_access_counts(state.clone(), ids));
+        let amp_active = state.config.amp_config.enabled || state.config.rmk_config.enabled;
+        let alpha = state.config.amp_config.feedback_ema_alpha;
+        let pool = state.db.clone();
+        let state_for_bump = state.clone();
+        let ids_for_ema = ids.clone();
+        tokio::spawn(async move {
+            store::bump_access_counts(state_for_bump, ids).await;
+            if amp_active {
+                store::update_utility_emas(&pool, &ids_for_ema, alpha).await;
+            }
+        });
     }
 
     // Record pairwise co-access edges when AMP or RMK is active.

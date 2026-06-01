@@ -310,6 +310,23 @@ pub async fn bump_access_counts(state: AppState, ids: Vec<Uuid>) {
     }
 }
 
+/// Batch-update `utility_ema` for a set of retrieved memory IDs.
+///
+/// A feedback value of 1.0 means "this memory was useful" — it was retrieved
+/// and injected into context.  Only called when AMP or RMK is active.
+/// Failures are silent; this is fire-and-forget on the hot path.
+pub async fn update_utility_emas(pool: &sqlx::PgPool, ids: &[Uuid], alpha: f64) {
+    let _ = sqlx::query(
+        "UPDATE memories
+         SET utility_ema = $1 * 1.0 + (1.0 - $1) * utility_ema
+         WHERE id = ANY($2)",
+    )
+    .bind(alpha)
+    .bind(ids)
+    .execute(pool)
+    .await;
+}
+
 pub async fn list_memories_for_agent(
     state: &AppState,
     agent_id: &str,
