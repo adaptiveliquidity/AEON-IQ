@@ -1,4 +1,6 @@
 use anyhow::{Context, Result};
+use crate::memory::amp::config::AmpConfig;
+use crate::memory::rmk::config::RmkConfig;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -76,6 +78,14 @@ pub struct Config {
     /// When true, an async LLM call is made after each L2 insert to detect
     /// contradictions against the top-k most similar existing memories.
     pub conflict_detection_enabled: bool,
+
+    // ── Adaptive Memory Pressure ──────────────────────────────────────────────
+    /// AMP is disabled by default.  Set `AMP_ENABLED=true` to activate.
+    pub amp_config: AmpConfig,
+
+    // ── Reflexive Memory Kernel ───────────────────────────────────────────────
+    /// RMK is disabled by default.  Set `RMK_ENABLED=true` to activate.
+    pub rmk_config: RmkConfig,
 }
 
 impl Config {
@@ -177,6 +187,20 @@ impl Config {
             conflict_detection_enabled: std::env::var("CONFLICT_DETECTION_ENABLED")
                 .unwrap_or_else(|_| "false".to_string())
                 .eq_ignore_ascii_case("true"),
+
+            amp_config: AmpConfig {
+                enabled: std::env::var("AMP_ENABLED")
+                    .unwrap_or_else(|_| "false".to_string())
+                    .eq_ignore_ascii_case("true"),
+                ..Default::default()
+            },
+
+            rmk_config: RmkConfig {
+                enabled: std::env::var("RMK_ENABLED")
+                    .unwrap_or_else(|_| "false".to_string())
+                    .eq_ignore_ascii_case("true"),
+                ..Default::default()
+            },
         })
     }
 }
