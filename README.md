@@ -69,8 +69,8 @@ Every `POST /v1/chat/completions` passes through five stages:
 │             │                                                  │
 │             ▼                                                  │
 │  [2] Retrieve ── embed user message → pgvector similarity      │
-│        search → inject top memories as <retrieved_memories>    │
-│        system message                                          │
+│        search → co-access bonus re-ranking → inject top        │
+│        memories as <retrieved_memories> system message         │
 │             │                                                  │
 │             ▼                                                  │
 │  [3] Translate & forward ── adapt to upstream provider format  │
@@ -81,7 +81,7 @@ Every `POST /v1/chat/completions` passes through five stages:
 │             ▼ (background, non-blocking)                       │
 │  [5] Extract & store ── LLM extracts structured facts,         │
 │        batch-embeds them, stores to Postgres + updates L1      │
-│        session summary                                         │
+│        session summary + records co-access edges               │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -101,9 +101,10 @@ The **LTM archival job** automatically compacts stale L2 facts into concise L3 s
 adjusted_dist = cosine_dist
     × (1 + MEMORY_DECAY_RATE × days_stale)
     × (1 + IMPORTANCE_BOOST_FACTOR × (1 − importance_score))
+    − graph_bonus_weight × co_access_neighbour_weight   (when AMP/RMK enabled)
 ```
 
-When both factors are 0 (default), this collapses to pure cosine similarity.
+When all factors are 0 or disabled (defaults), this collapses to pure cosine similarity. The **co-access bonus** promotes memories that frequently appear alongside other retrieved memories, building a pheromone-style graph of related facts over time.
 
 ### Importance scoring
 
@@ -112,6 +113,34 @@ Memories get an importance score from the highest-priority available signal:
 1. **Caller header** — `x-memory-importance: 0.95` (operator override)
 2. **Agent XML tags** — `<important>…</important>` in assistant responses (floored at 0.9)
 3. **LLM extractor** — four-tier rubric: 1.0 = critical, 0.8–0.99 = high, 0.5–0.79 = standard, 0–0.49 = trivial
+
+Memories with `importance_score ≥ 0.9` are **never automatically archived** regardless of age or access count.
+
+---
+
+## Adaptive Memory & Self-tuning
+
+### Adaptive Memory Pressure (AMP)
+
+Enable with `AMP_ENABLED=true`. AMP builds a **co-access pheromone graph** — every time two memories are retrieved together, an edge between them grows stronger. This graph drives the retrieval bonus described above, naturally surfacing related facts without any manual curation.
+
+Additional AMP capabilities (configurable, off by default):
+- **Pressure scoring** — `pressure = a·days_stale + b·(1 − utility_ema)` identifies stale, rarely-accessed memories
+- **Soft eviction** — a PI controller gradually raises the eviction threshold when memory count exceeds a target
+- **Co-access decay** — edge weights decay daily so recent co-occurrences matter more than old ones
+
+### Reflexive Memory Kernel (RMK)
+
+Enable with `RMK_ENABLED=true`. RMK replaces static retrieval thresholds with a **learned policy vector** θ = [pressure_a, pressure_b, kp, ki, graph_bonus_weight, retrieval_threshold] that self-tunes from episode rewards.
+
+How it works:
+1. At the start of each request, the agent's latest policy is read from the database and applied (retrieval threshold, AMP coefficients)
+2. After each response, episode metrics are logged (retrieval precision, token savings proxy, reward)
+3. A background worker runs hourly; for agents with enough episodes it applies **ε-greedy exploration** (±10% perturbation with probability ε=0.1) and persists a new policy
+
+Reward function: `R = task_success + 0.5·token_savings + precision@5 − 0.1·eviction_cost`
+
+The first policy for each agent is seeded from the static AMP defaults — enabling RMK without prior training is equivalent to running with static AMP.
 
 ---
 
@@ -199,10 +228,13 @@ Or wrap critical content in assistant responses:
 
 ## Configuration reference
 
+### Core
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | *(required)* | PostgreSQL connection string |
 | `OPENAI_API_KEY` | — | API key forwarded to upstream LLM; used for embeddings and extraction |
+| `PORT` | `8080` | Kernel listen port |
 | `UPSTREAM_PROVIDER` | `openai` | Provider: `openai` \| `anthropic` \| `gemini` |
 | `UPSTREAM_BASE_URL` | `https://api.openai.com` | LLM provider base URL |
 | `EMBEDDING_BASE_URL` | `UPSTREAM_BASE_URL` | Override for embedding calls only |
@@ -210,35 +242,85 @@ Or wrap critical content in assistant responses:
 | `EXTRACTOR_MODEL` | `gpt-4o-mini` | Model used for background fact extraction |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
 | `EMBEDDING_DIMENSION` | `1536` | Must match `vector(N)` in schema |
+
+### Retrieval
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `RETRIEVAL_THRESHOLD` | `0.80` | Cosine distance upper bound (lower = stricter) |
 | `MEMORY_DECAY_RATE` | `0.0` | Per-day staleness penalty; 0 = disabled |
 | `IMPORTANCE_BOOST_FACTOR` | `0.0` | Importance weight in retrieval; 0 = disabled |
 | `IMPORTANCE_REFRESH_BOOST` | `0.05` | Per-retrieval importance bump; 0 = disabled |
+| `GRAPH_RETRIEVAL_ENABLED` | `false` | Entity graph-walk augmentation during retrieval |
+| `DEDUP_THRESHOLD` | `0.05` | Cosine distance below which a new insert is skipped as duplicate; 0 = disabled |
+| `CONFLICT_DETECTION_ENABLED` | `false` | Async LLM-based contradiction detection on each L2 insert |
+
+### Security & limits
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MANAGEMENT_API_KEY` | *(unset)* | Protects `/api/v1/*`; must be set or `ALLOW_UNAUTH_MANAGEMENT=true` required |
+| `ALLOW_UNAUTH_MANAGEMENT` | `false` | Set `true` to allow unauthenticated management access (dev only; logs warning) |
+| `MAX_BODY_BYTES` | `10485760` | Max request body size in bytes (10 MiB); returns HTTP 413 if exceeded |
 | `RATE_LIMIT_RPM` | `0` | Per-agent requests per minute cap; 0 = disabled |
 | `RATE_LIMIT_BURST` | `20` | Token bucket burst size |
-| `MANAGEMENT_API_KEY` | *(unset)* | Protects `/api/v1/*`; unauthenticated if unset |
+
+### Database pool
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DB_MAX_CONNECTIONS` | `20` | PgPool max connections |
+| `DB_ACQUIRE_TIMEOUT_SECS` | `5` | Seconds to wait for a connection before error |
+| `DB_IDLE_TIMEOUT_SECS` | `300` | Seconds before idle connections are reclaimed |
+
+### LTM archival
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `ARCHIVAL_INTERVAL_HOURS` | `24` | LTM compaction job frequency; 0 = disabled |
 | `ARCHIVAL_MIN_AGE_DAYS` | `7` | Minimum age before an L2 memory is a compaction candidate |
 | `ARCHIVAL_MIN_MEMORIES` | `10` | Minimum candidate count before triggering compaction |
-| `PORT` | `8080` | Kernel listen port |
+
+### Adaptive Memory Pressure (AMP)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AMP_ENABLED` | `false` | Enable AMP: co-access graph bonuses, pressure scoring, soft eviction |
+
+### Reflexive Memory Kernel (RMK)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RMK_ENABLED` | `false` | Enable RMK: learned policy θ for adaptive thresholds and AMP coefficients |
 
 ---
 
 ## Management API
 
-Secure with `X-Management-Key` or `Authorization: Bearer` headers (set `MANAGEMENT_API_KEY`).
+Authenticate with `X-Management-Key: <key>` or `Authorization: Bearer <key>` (set `MANAGEMENT_API_KEY`).
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/agents` | List all agents |
+| DELETE | `/api/v1/agents/:id` | Delete agent and all its data (cascade) |
 | GET | `/api/v1/agents/:id/memories` | Paginated live memories |
 | POST | `/api/v1/agents/:id/memories` | Create memory manually |
+| POST | `/api/v1/agents/:id/memories/bulk` | Bulk archive or delete memories by filter |
 | GET | `/api/v1/agents/:id/memories/archived` | Tombstoned memories |
 | GET | `/api/v1/agents/:id/archival/batches` | Archival batch history |
-| POST | `/api/v1/memories/search` | Semantic search |
+| POST | `/api/v1/agents/:id/archival/trigger` | Manually trigger L2→L3 compaction |
+| GET | `/api/v1/agents/:id/sessions` | List sessions with turn counts |
+| GET | `/api/v1/agents/:id/sessions/:sid` | Session detail + working memory |
+| DELETE | `/api/v1/agents/:id/sessions/:sid` | Delete session working memory |
+| GET | `/api/v1/agents/:id/conflicts` | List unresolved (or all) memory conflicts |
+| GET | `/api/v1/agents/:id/export` | Export all live memories as NDJSON |
+| POST | `/api/v1/agents/:id/import` | Import NDJSON; re-embeds and deduplicates |
+| POST | `/api/v1/memories/search` | Semantic search across all memories |
+| PATCH | `/api/v1/memories/:id` | Update memory content (re-embeds) |
 | DELETE | `/api/v1/memories/:id` | Hard-delete a memory |
 | POST | `/api/v1/memories/:id/restore` | Restore a tombstoned memory |
-| POST | `/api/v1/archival/batches/:id/restore` | Restore an entire archival batch |
+| POST | `/api/v1/archival/batches/:id/restore` | Restore entire archival batch (L2 back, L3 tombstoned) |
+| POST | `/api/v1/conflicts/:id/resolve` | Resolve conflict: keep_a \| keep_b \| keep_both \| dismissed |
 | GET | `/api/v1/stats` | Agent + memory counts |
 
 ### Example: inspect memories
@@ -293,11 +375,12 @@ Grafana dashboard provisioned automatically at **http://localhost:3001**.
 ## Production notes
 
 1. Replace `memoryos_secret` with a strong Postgres password
-2. Set `MANAGEMENT_API_KEY` to a secret value
+2. Set `MANAGEMENT_API_KEY` to a secret value — **the server will not start without it** unless `ALLOW_UNAUTH_MANAGEMENT=true` is also set
 3. Put Nginx/Caddy in front of port 8080 (TLS termination)
 4. Set `RUST_LOG=memoryos_kernel=warn` to reduce log volume
 5. Add Postgres replicas/backups for the `postgres_data` volume
 6. The kernel is stateless — scale horizontally behind a load balancer
+7. Tune `MAX_BODY_BYTES` if your agents send very large context windows (default 10 MiB)
 
 ---
 
@@ -320,7 +403,7 @@ cargo test
 cd dashboard && npm install && npm run dev
 ```
 
-Rust edition 2021, sqlx 0.8 (non-macro form — no compile-time DB dependency). All PRs run the full CI matrix before merge.
+Rust edition 2021, sqlx 0.9 (non-macro form — no compile-time DB dependency). All PRs run the full CI matrix before merge.
 
 ---
 
