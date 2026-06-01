@@ -22,6 +22,76 @@ export interface MemorySearchResult {
   query: string;
 }
 
+export interface TimeTravelMemory {
+  id: string;
+  version_number: number;
+  content: string;
+  memory_type: string;
+  confidence: number;
+  provenance: string;
+  importance_score: number;
+  importance_source: string;
+  status: string;
+  sensitivity: string;
+  valid_from?: string | null;
+  valid_to?: string | null;
+  source_turn?: number;
+  created_at: string;
+  version_created_at: string;
+}
+
+export interface TimeTravelResponse {
+  timestamp: string;
+  memories: TimeTravelMemory[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface RetrievalActivitySummary {
+  total_retrievals: number;
+  unique_memories_recalled: number;
+}
+
+export interface MemoryDiffSummary {
+  added: number;
+  modified: number;
+  archived: number;
+  status_changed: number;
+  total_retrievals: number;
+  unique_memories_recalled: number;
+}
+
+export interface MemoryDiffModified {
+  memory_id: string;
+  before: TimeTravelMemory;
+  after: TimeTravelMemory;
+}
+
+export interface MemoryDiffArchived {
+  memory_id: string;
+  content: string;
+  memory_type: string;
+  archived_at: string;
+}
+
+export interface MemoryDiffStatusChanged {
+  memory_id: string;
+  old_status: string;
+  new_status: string;
+}
+
+export interface MemoryDiffResponse {
+  from: string;
+  to: string;
+  summary: MemoryDiffSummary;
+  added: TimeTravelMemory[];
+  modified: MemoryDiffModified[];
+  archived: MemoryDiffArchived[];
+  status_changed: MemoryDiffStatusChanged[];
+  retrieval_activity: RetrievalActivitySummary;
+}
+
 export interface Session {
   session_id: string;
   agent_id: string;

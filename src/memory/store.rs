@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use pgvector::Vector;
 use sqlx::QueryBuilder;
 use uuid::Uuid;
@@ -7,6 +8,33 @@ use crate::{
     models::{ArchivalBatch, Memory, MemorySearchRow, WorkingMemory},
     AppState,
 };
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct TemporalMemoryVersion {
+    pub memory_id: Uuid,
+    pub version_number: i32,
+    pub content: String,
+    pub memory_type: String,
+    pub confidence: f32,
+    pub provenance: String,
+    pub importance_score: f32,
+    pub importance_source: String,
+    pub status: String,
+    pub sensitivity: String,
+    pub valid_from: Option<DateTime<Utc>>,
+    pub valid_to: Option<DateTime<Utc>>,
+    pub source_turn: Option<i32>,
+    pub memory_created_at: DateTime<Utc>,
+    pub version_created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ArchivedBetweenRow {
+    pub id: Uuid,
+    pub content: String,
+    pub memory_type: String,
+    pub archived_at: DateTime<Utc>,
+}
 
 // ── Agent ─────────────────────────────────────────────────────────────────────
 
@@ -443,6 +471,244 @@ pub async fn list_memories_for_agent(
     .fetch_all(&state.db)
     .await?;
     Ok(rows)
+}
+
+/// Time-travel: latest version of each memory visible at a timestamp.
+pub async fn list_memories_at_timestamp(
+    state: &AppState,
+    agent_id: &str,
+    timestamp: DateTime<Utc>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<TemporalMemoryVersion>> {
+    let rows = sqlx::query_as::<_, TemporalMemoryVersion>(
+        r#"
+        WITH latest_versions AS (
+            SELECT DISTINCT ON (mv.memory_id)
+                mv.memory_id,
+                mv.version_number,
+                mv.content,
+                mv.memory_type,
+                mv.confidence,
+                mv.provenance,
+                mv.importance_score,
+                mv.importance_source,
+                mv.status,
+                mv.sensitivity,
+                mv.valid_from,
+                mv.valid_to,
+                mv.source_turn,
+                m.created_at AS memory_created_at,
+                mv.created_at AS version_created_at
+            FROM memory_versions mv
+            JOIN memories m ON m.id = mv.memory_id
+            WHERE mv.agent_id = $1
+              AND mv.created_at <= $2
+              AND m.created_at <= $2
+              AND (m.archived_at IS NULL OR m.archived_at > $2)
+            ORDER BY mv.memory_id, mv.version_number DESC
+        )
+        SELECT *
+        FROM latest_versions
+        ORDER BY memory_created_at DESC
+        LIMIT $3 OFFSET $4
+        "#,
+    )
+    .bind(agent_id)
+    .bind(timestamp)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn count_memories_at_timestamp(
+    state: &AppState,
+    agent_id: &str,
+    timestamp: DateTime<Utc>,
+) -> Result<i64> {
+    let row: (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)::bigint
+        FROM memories
+        WHERE agent_id = $1
+          AND created_at <= $2
+          AND (archived_at IS NULL OR archived_at > $2)
+        "#,
+    )
+    .bind(agent_id)
+    .bind(timestamp)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(row.0)
+}
+
+pub async fn list_latest_versions_as_of(
+    state: &AppState,
+    agent_id: &str,
+    timestamp: DateTime<Utc>,
+) -> Result<Vec<TemporalMemoryVersion>> {
+    let rows = sqlx::query_as::<_, TemporalMemoryVersion>(
+        r#"
+        WITH latest_versions AS (
+            SELECT DISTINCT ON (mv.memory_id)
+                mv.memory_id,
+                mv.version_number,
+                mv.content,
+                mv.memory_type,
+                mv.confidence,
+                mv.provenance,
+                mv.importance_score,
+                mv.importance_source,
+                mv.status,
+                mv.sensitivity,
+                mv.valid_from,
+                mv.valid_to,
+                mv.source_turn,
+                m.created_at AS memory_created_at,
+                mv.created_at AS version_created_at
+            FROM memory_versions mv
+            JOIN memories m ON m.id = mv.memory_id
+            WHERE mv.agent_id = $1
+              AND mv.created_at <= $2
+              AND m.created_at <= $2
+              AND (m.archived_at IS NULL OR m.archived_at > $2)
+            ORDER BY mv.memory_id, mv.version_number DESC
+        )
+        SELECT *
+        FROM latest_versions
+        ORDER BY memory_created_at DESC
+        "#,
+    )
+    .bind(agent_id)
+    .bind(timestamp)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn list_added_memories_between(
+    state: &AppState,
+    agent_id: &str,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<TemporalMemoryVersion>> {
+    let rows = sqlx::query_as::<_, TemporalMemoryVersion>(
+        r#"
+        WITH candidates AS (
+            SELECT id
+            FROM memories
+            WHERE agent_id = $1
+              AND created_at > $2
+              AND created_at <= $3
+        ),
+        latest_versions AS (
+            SELECT DISTINCT ON (mv.memory_id)
+                mv.memory_id,
+                mv.version_number,
+                mv.content,
+                mv.memory_type,
+                mv.confidence,
+                mv.provenance,
+                mv.importance_score,
+                mv.importance_source,
+                mv.status,
+                mv.sensitivity,
+                mv.valid_from,
+                mv.valid_to,
+                mv.source_turn,
+                m.created_at AS memory_created_at,
+                mv.created_at AS version_created_at
+            FROM memory_versions mv
+            JOIN memories m ON m.id = mv.memory_id
+            JOIN candidates c ON c.id = mv.memory_id
+            WHERE mv.agent_id = $1
+              AND mv.created_at <= $3
+            ORDER BY mv.memory_id, mv.version_number DESC
+        )
+        SELECT *
+        FROM latest_versions
+        ORDER BY memory_created_at DESC
+        "#,
+    )
+    .bind(agent_id)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn list_archived_memories_between(
+    state: &AppState,
+    agent_id: &str,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<ArchivedBetweenRow>> {
+    let rows = sqlx::query_as::<_, ArchivedBetweenRow>(
+        r#"
+        SELECT id, content, memory_type, archived_at
+        FROM memories
+        WHERE agent_id = $1
+          AND archived_at IS NOT NULL
+          AND archived_at > $2
+          AND archived_at <= $3
+        ORDER BY archived_at DESC
+        "#,
+    )
+    .bind(agent_id)
+    .bind(from)
+    .bind(to)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn retrieval_activity_between(
+    state: &AppState,
+    agent_id: &str,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<(i64, i64)> {
+    let total_row: (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*)::bigint
+        FROM memory_retrieval_logs
+        WHERE agent_id = $1
+          AND created_at >= $2
+          AND created_at <= $3
+        "#,
+    )
+    .bind(agent_id)
+    .bind(from)
+    .bind(to)
+    .fetch_one(&state.db)
+    .await?;
+
+    let unique_row: (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(DISTINCT mem_id)::bigint
+        FROM (
+            SELECT UNNEST(injected_memory_ids) AS mem_id
+            FROM memory_retrieval_logs
+            WHERE agent_id = $1
+              AND created_at >= $2
+              AND created_at <= $3
+        ) t
+        "#,
+    )
+    .bind(agent_id)
+    .bind(from)
+    .bind(to)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok((total_row.0, unique_row.0))
 }
 
 /// List tombstoned (archived) memories for an agent, newest-archived first.

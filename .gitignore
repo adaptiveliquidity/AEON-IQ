@@ -12,7 +12,28 @@ dashboard/.next
 dashboard/out
 dashboard/.env.local
 
+# Local agent tooling (do not ship with product)
+.cursor/
+
 # Misc
 *.DS_Store
 dashboard/tsconfig.tsbuildinfo
 .claude/
+
+# Node / JS artifacts
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs / temp
+*.log
+tmp/
+temp/
+cache/

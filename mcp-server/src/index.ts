@@ -247,6 +247,33 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: "time_travel",
+    description: "Return memory state for an agent at a specific timestamp.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string", description: "Agent identifier." },
+        timestamp: { type: "string", description: "ISO-8601 timestamp." },
+        limit: { type: "number", description: "Page size (default: 50)." },
+        offset: { type: "number", description: "Pagination offset (default: 0)." },
+      },
+      required: ["timestamp"],
+    },
+  },
+  {
+    name: "memory_diff",
+    description: "Return memory changes for an agent between two timestamps.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string", description: "Agent identifier." },
+        from: { type: "string", description: "Start ISO-8601 timestamp." },
+        to: { type: "string", description: "End ISO-8601 timestamp." },
+      },
+      required: ["from", "to"],
+    },
+  },
+  {
     name: "get_versions",
     description: "Get full version history for a memory.",
     inputSchema: {
@@ -593,6 +620,33 @@ async function handleGetRetrievals(args: Record<string, unknown>): Promise<strin
   return JSON.stringify(result, null, 2);
 }
 
+async function handleTimeTravel(args: Record<string, unknown>): Promise<string> {
+  const id = agentId(args);
+  const timestamp = args.timestamp as string;
+  const limit = (args.limit as number | undefined) ?? 50;
+  const offset = (args.offset as number | undefined) ?? 0;
+  const qs = new URLSearchParams({
+    timestamp,
+    limit: String(limit),
+    offset: String(offset),
+  });
+  const result = await apiFetch(
+    `/api/v1/agents/${encodeURIComponent(id)}/memories/at?${qs.toString()}`
+  );
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleMemoryDiff(args: Record<string, unknown>): Promise<string> {
+  const id = agentId(args);
+  const from = args.from as string;
+  const to = args.to as string;
+  const qs = new URLSearchParams({ from, to });
+  const result = await apiFetch(
+    `/api/v1/agents/${encodeURIComponent(id)}/memories/diff?${qs.toString()}`
+  );
+  return JSON.stringify(result, null, 2);
+}
+
 async function handleGetVersions(args: Record<string, unknown>): Promise<string> {
   const memoryId = args.memory_id as string;
   const result = await apiFetch(`/api/v1/memories/${encodeURIComponent(memoryId)}/versions`);
@@ -817,6 +871,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case "get_retrievals":
         text = await handleGetRetrievals(a);
+        break;
+      case "time_travel":
+        text = await handleTimeTravel(a);
+        break;
+      case "memory_diff":
+        text = await handleMemoryDiff(a);
         break;
       case "get_versions":
         text = await handleGetVersions(a);

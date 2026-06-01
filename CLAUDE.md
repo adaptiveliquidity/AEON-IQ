@@ -185,6 +185,8 @@ AppState {
 | GET | `/api/v1/agents` | List all agents |
 | DELETE | `/api/v1/agents/:id` | Delete agent and all its data (cascade) |
 | GET | `/api/v1/agents/:id/memories` | Paginated live memories |
+| GET | `/api/v1/agents/:id/memories/at` | Time-travel snapshot at `timestamp` using latest version per memory at or before that time |
+| GET | `/api/v1/agents/:id/memories/diff` | Temporal diff in `[from,to]`: added, modified, archived, status_changed, retrieval_activity |
 | POST | `/api/v1/agents/:id/memories` | Create memory manually |
 | PATCH | `/api/v1/memories/:id` | Update memory content (re-embeds) |
 | GET | `/api/v1/agents/:id/memories/archived` | Tombstoned memories |
@@ -208,6 +210,18 @@ AppState {
 | GET | `/api/v1/memories/:id/versions` | Full version history for a memory |
 | PATCH | `/api/v1/memories/:id/status` | Set status (active\|candidate\|quarantined\|suppressed); creates version snapshot |
 | PATCH | `/api/v1/memories/:id/sensitivity` | Set sensitivity (unknown\|normal\|private\|sensitive\|secret) |
+
+### Temporal memory endpoints
+
+- `GET /api/v1/agents/:id/memories/at?timestamp=<ISO>&limit=<n>&offset=<n>`
+  - Reconstructs memory state at a point in time from `memory_versions`.
+  - Includes memories created at/before `timestamp`.
+  - Excludes memories archived at/before `timestamp`.
+  - Returns paginated rows and total count.
+- `GET /api/v1/agents/:id/memories/diff?from=<ISO>&to=<ISO>`
+  - Compares latest version as-of `from` vs latest version as-of `to`.
+  - Returns `added`, `modified` (before/after), `archived`, `status_changed`.
+  - Includes retrieval activity summary from `memory_retrieval_logs` in `[from,to]`.
 
 ### Observability
 

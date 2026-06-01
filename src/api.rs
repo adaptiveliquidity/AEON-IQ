@@ -6,6 +6,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::{
@@ -79,6 +80,84 @@ pub struct MemoryListResponse {
     pub total: i64,
     pub offset: i64,
     pub limit: i64,
+}
+
+#[derive(Serialize)]
+pub struct TimeTravelMemoryDto {
+    pub id: String,
+    pub version_number: i32,
+    pub content: String,
+    pub memory_type: String,
+    pub confidence: f32,
+    pub provenance: String,
+    pub importance_score: f32,
+    pub importance_source: String,
+    pub status: String,
+    pub sensitivity: String,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
+    pub source_turn: Option<i32>,
+    pub created_at: String,
+    pub version_created_at: String,
+}
+
+#[derive(Serialize)]
+pub struct TimeTravelResponse {
+    pub timestamp: String,
+    pub memories: Vec<TimeTravelMemoryDto>,
+    pub total: i64,
+    pub offset: i64,
+    pub limit: i64,
+}
+
+#[derive(Serialize)]
+pub struct ArchivedDiffDto {
+    pub memory_id: String,
+    pub content: String,
+    pub memory_type: String,
+    pub archived_at: String,
+}
+
+#[derive(Serialize)]
+pub struct ModifiedMemoryDto {
+    pub memory_id: String,
+    pub before: TimeTravelMemoryDto,
+    pub after: TimeTravelMemoryDto,
+}
+
+#[derive(Serialize)]
+pub struct StatusChangedDto {
+    pub memory_id: String,
+    pub old_status: String,
+    pub new_status: String,
+}
+
+#[derive(Serialize)]
+pub struct RetrievalActivityDto {
+    pub total_retrievals: i64,
+    pub unique_memories_recalled: i64,
+}
+
+#[derive(Serialize)]
+pub struct MemoryDiffSummaryDto {
+    pub added: usize,
+    pub modified: usize,
+    pub archived: usize,
+    pub status_changed: usize,
+    pub total_retrievals: i64,
+    pub unique_memories_recalled: i64,
+}
+
+#[derive(Serialize)]
+pub struct MemoryDiffResponse {
+    pub from: String,
+    pub to: String,
+    pub summary: MemoryDiffSummaryDto,
+    pub added: Vec<TimeTravelMemoryDto>,
+    pub modified: Vec<ModifiedMemoryDto>,
+    pub archived: Vec<ArchivedDiffDto>,
+    pub status_changed: Vec<StatusChangedDto>,
+    pub retrieval_activity: RetrievalActivityDto,
 }
 
 #[derive(Serialize)]
@@ -210,6 +289,39 @@ pub struct SessionListResponse {
 pub struct Pagination {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub struct TimeTravelQuery {
+    pub timestamp: DateTime<Utc>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub struct MemoryDiffQuery {
+    pub from: DateTime<Utc>,
+    pub to: DateTime<Utc>,
+}
+
+fn to_time_travel_dto(row: &store::TemporalMemoryVersion) -> TimeTravelMemoryDto {
+    TimeTravelMemoryDto {
+        id: row.memory_id.to_string(),
+        version_number: row.version_number,
+        content: row.content.clone(),
+        memory_type: row.memory_type.clone(),
+        confidence: row.confidence,
+        provenance: row.provenance.clone(),
+        importance_score: row.importance_score,
+        importance_source: row.importance_source.clone(),
+        status: row.status.clone(),
+        sensitivity: row.sensitivity.clone(),
+        valid_from: row.valid_from.map(|t| t.to_rfc3339()),
+        valid_to: row.valid_to.map(|t| t.to_rfc3339()),
+        source_turn: row.source_turn,
+        created_at: row.memory_created_at.to_rfc3339(),
+        version_created_at: row.version_created_at.to_rfc3339(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -355,6 +467,137 @@ pub async fn list_memories(
         offset,
         limit,
         memories: memories.into_iter().map(MemoryDto::from).collect(),
+    }))
+}
+
+/// GET /api/v1/agents/:id/memories/at
+///
+/// Returns memory state as of a specific timestamp.
+pub async fn memories_at_timestamp(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(query): Query<TimeTravelQuery>,
+) -> Result<Json<TimeTravelResponse>, (StatusCode, String)> {
+    let limit = query.limit.unwrap_or(50).min(200);
+    let offset = query.offset.unwrap_or(0);
+
+    let memories = store::list_memories_at_timestamp(
+        &state,
+        &agent_id,
+        query.timestamp,
+        limit,
+        offset,
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total = store::count_memories_at_timestamp(&state, &agent_id, query.timestamp)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(TimeTravelResponse {
+        timestamp: query.timestamp.to_rfc3339(),
+        memories: memories.iter().map(to_time_travel_dto).collect(),
+        total,
+        offset,
+        limit,
+    }))
+}
+
+/// GET /api/v1/agents/:id/memories/diff
+///
+/// Returns memory changes between two timestamps.
+pub async fn memories_diff(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(query): Query<MemoryDiffQuery>,
+) -> Result<Json<MemoryDiffResponse>, (StatusCode, String)> {
+    if query.from >= query.to {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "from must be earlier than to".to_string(),
+        ));
+    }
+
+    let before_rows = store::list_latest_versions_as_of(&state, &agent_id, query.from)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let after_rows = store::list_latest_versions_as_of(&state, &agent_id, query.to)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let added_rows = store::list_added_memories_between(&state, &agent_id, query.from, query.to)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let archived_rows =
+        store::list_archived_memories_between(&state, &agent_id, query.from, query.to)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let (total_retrievals, unique_memories_recalled) =
+        store::retrieval_activity_between(&state, &agent_id, query.from, query.to)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let before_map: HashMap<Uuid, store::TemporalMemoryVersion> = before_rows
+        .into_iter()
+        .map(|r| (r.memory_id, r))
+        .collect();
+    let after_map: HashMap<Uuid, store::TemporalMemoryVersion> = after_rows
+        .into_iter()
+        .map(|r| (r.memory_id, r))
+        .collect();
+
+    let mut modified = Vec::new();
+    let mut status_changed = Vec::new();
+
+    for (memory_id, after) in &after_map {
+        if let Some(before) = before_map.get(memory_id) {
+            if before.content != after.content {
+                modified.push(ModifiedMemoryDto {
+                    memory_id: memory_id.to_string(),
+                    before: to_time_travel_dto(before),
+                    after: to_time_travel_dto(after),
+                });
+            }
+            if before.status != after.status {
+                status_changed.push(StatusChangedDto {
+                    memory_id: memory_id.to_string(),
+                    old_status: before.status.clone(),
+                    new_status: after.status.clone(),
+                });
+            }
+        }
+    }
+
+    let added: Vec<TimeTravelMemoryDto> = added_rows.iter().map(to_time_travel_dto).collect();
+    let archived: Vec<ArchivedDiffDto> = archived_rows
+        .into_iter()
+        .map(|r| ArchivedDiffDto {
+            memory_id: r.id.to_string(),
+            content: r.content,
+            memory_type: r.memory_type,
+            archived_at: r.archived_at.to_rfc3339(),
+        })
+        .collect();
+
+    Ok(Json(MemoryDiffResponse {
+        from: query.from.to_rfc3339(),
+        to: query.to.to_rfc3339(),
+        summary: MemoryDiffSummaryDto {
+            added: added.len(),
+            modified: modified.len(),
+            archived: archived.len(),
+            status_changed: status_changed.len(),
+            total_retrievals,
+            unique_memories_recalled,
+        },
+        added,
+        modified,
+        archived,
+        status_changed,
+        retrieval_activity: RetrievalActivityDto {
+            total_retrievals,
+            unique_memories_recalled,
+        },
     }))
 }
 

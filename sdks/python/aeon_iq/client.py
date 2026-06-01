@@ -266,6 +266,28 @@ class MemoryClient:
             params["session_id"] = session_id
         return self._get(f"/api/v1/agents/{quote(agent_id)}/retrievals", params=params)
 
+    def time_travel(
+        self,
+        agent_id: str,
+        timestamp: str,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> dict:
+        """Return memory state at a specific timestamp."""
+        params: dict[str, object] = {"timestamp": timestamp}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        return self._get(f"/api/v1/agents/{quote(agent_id)}/memories/at", params=params)
+
+    def diff(self, agent_id: str, from_ts: str, to_ts: str) -> dict:
+        """Return memory lifecycle diff between two timestamps."""
+        return self._get(
+            f"/api/v1/agents/{quote(agent_id)}/memories/diff",
+            params={"from": from_ts, "to": to_ts},
+        )
+
     def list_memory_versions(self, memory_id: str) -> dict:
         """List full version history for one memory."""
         return self._get(f"/api/v1/memories/{quote(memory_id)}/versions")

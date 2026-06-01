@@ -304,6 +304,8 @@ Authenticate with `X-Management-Key: <key>` or `Authorization: Bearer <key>` (se
 | GET | `/api/v1/agents` | List all agents |
 | DELETE | `/api/v1/agents/:id` | Delete agent and all its data (cascade) |
 | GET | `/api/v1/agents/:id/memories` | Paginated live memories |
+| GET | `/api/v1/agents/:id/memories/at` | Time-travel snapshot at `timestamp` using latest memory versions as-of that time |
+| GET | `/api/v1/agents/:id/memories/diff` | Temporal diff between `from` and `to`: added/modified/archived/status_changed/retrieval_activity |
 | POST | `/api/v1/agents/:id/memories` | Create memory manually |
 | POST | `/api/v1/agents/:id/memories/bulk` | Bulk archive or delete memories by filter |
 | GET | `/api/v1/agents/:id/memories/archived` | Tombstoned memories |
@@ -338,6 +340,20 @@ curl -X POST \
   -H "Content-Type: application/json" \
   -d '{"query": "user preferences", "agent_id": "my-bot", "limit": 5}' \
   http://localhost:8080/api/v1/memories/search
+```
+
+### Example: time-travel snapshot
+
+```bash
+curl -H "X-Management-Key: $MANAGEMENT_API_KEY" \
+  "http://localhost:8080/api/v1/agents/my-bot/memories/at?timestamp=2026-06-01T00:00:00Z&limit=20&offset=0"
+```
+
+### Example: memory diff
+
+```bash
+curl -H "X-Management-Key: $MANAGEMENT_API_KEY" \
+  "http://localhost:8080/api/v1/agents/my-bot/memories/diff?from=2026-05-01T00:00:00Z&to=2026-06-02T00:00:00Z"
 ```
 
 ---

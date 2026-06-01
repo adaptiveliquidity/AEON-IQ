@@ -9,11 +9,13 @@ import type {
   CreateMemoryOptions,
   ImportResult,
   ListMemoriesOptions,
+  MemoryDiffResponse,
   Memory,
   MemoryClientOptions,
   MemorySearchResult,
   Session,
   Stats,
+  TimeTravelResponse,
 } from "./types.js";
 
 export class MemoryClient {
@@ -55,6 +57,31 @@ export class MemoryClient {
       `/api/v1/agents/${enc(agentId)}/memories?limit=${limit}&offset=${offset}`
     );
     return data.memories ?? [];
+  }
+
+  /** Return memory state for an agent at a specific timestamp. */
+  async timeTravel(
+    agentId: string,
+    timestamp: string,
+    options: { limit?: number; offset?: number } = {}
+  ): Promise<TimeTravelResponse> {
+    const { limit = 50, offset = 0 } = options;
+    const qs = new URLSearchParams({
+      timestamp,
+      limit: String(limit),
+      offset: String(offset),
+    });
+    return this.get<TimeTravelResponse>(
+      `/api/v1/agents/${enc(agentId)}/memories/at?${qs.toString()}`
+    );
+  }
+
+  /** Return memory lifecycle diff between two timestamps. */
+  async diff(agentId: string, fromTs: string, toTs: string): Promise<MemoryDiffResponse> {
+    const qs = new URLSearchParams({ from: fromTs, to: toTs });
+    return this.get<MemoryDiffResponse>(
+      `/api/v1/agents/${enc(agentId)}/memories/diff?${qs.toString()}`
+    );
   }
 
   /** Manually create a memory for an agent. */
