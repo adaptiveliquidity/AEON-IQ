@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use crate::{
     embeddings::embed_text,
+    memory::rmk::policy::PolicyParams,
     models::{Memory, MemorySearchRow, WorkingMemory, WorkingMemoryState},
     AppState,
 };
@@ -15,6 +16,10 @@ use super::store;
 /// `entities`, their relations in `memory_graph` are walked, and memories
 /// linked to those entities via `memory_entity_links` are merged in.
 ///
+/// When `policy` is `Some` and RMK is enabled, the agent's learned policy
+/// overrides the static AMP config for this request (pressure coefficients,
+/// PI gains, co-access bonus weight).
+///
 /// Also fires a background access-count bump for all retrieved memories.
 pub async fn retrieve_relevant(
     state: &AppState,
@@ -22,6 +27,7 @@ pub async fn retrieve_relevant(
     query: &str,
     limit: i64,
     threshold: f64,
+    policy: Option<&PolicyParams>,
 ) -> Result<Vec<Memory>> {
     let start = std::time::Instant::now();
 
@@ -48,19 +54,36 @@ pub async fn retrieve_relevant(
     // neighbour_weight_sum`, promoting memories that frequently appear
     // alongside other recently retrieved memories.  The rows are then
     // re-sorted by the adjusted distance.
+    //
+    // When a learned RMK policy is provided, its 5 non-threshold dimensions
+    // override the static AMP config structs for this request only.
     let rows: Vec<MemorySearchRow> =
         if (state.config.amp_config.enabled || state.config.rmk_config.enabled)
             && !raw_rows.is_empty()
         {
+            // Clone per-request copies of the AMP structs so global state is
+            // never mutated; apply learned overrides from the policy if present.
+            let mut pressure_params = state.config.amp_config.pressure_params.clone();
+            let mut controller_params = state.config.amp_config.controller_params.clone();
+            let mut co_access_params = state.config.amp_config.co_access_params.clone();
+            let mut _local_threshold = threshold;
+            if let Some(pol) = policy {
+                crate::memory::rmk::adapter::RmkAdapter::apply(
+                    pol,
+                    &mut pressure_params,
+                    &mut controller_params,
+                    &mut co_access_params,
+                    &mut _local_threshold,
+                );
+            }
+
             let augmenter = crate::memory::amp::augmenter::RetrievalAugmenter::new(
-                crate::memory::amp::pressure::PressureManager::new(
-                    state.config.amp_config.pressure_params.clone(),
-                ),
+                crate::memory::amp::pressure::PressureManager::new(pressure_params),
                 crate::memory::amp::co_access::CoAccessGraph::new(
                     state.db.clone(),
-                    state.config.amp_config.co_access_params.clone(),
+                    co_access_params.clone(),
                 ),
-                state.config.amp_config.co_access_params.graph_bonus_weight,
+                co_access_params.graph_bonus_weight,
             );
 
             let pairs: Vec<(uuid::Uuid, f64)> = raw_rows
