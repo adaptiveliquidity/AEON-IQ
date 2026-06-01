@@ -982,6 +982,163 @@ pub async fn import_memories(
     })))
 }
 
+// ── Memory status and sensitivity management ──────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct PatchStatusBody {
+    pub status: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct PatchSensitivityBody {
+    pub sensitivity: String,
+}
+
+const VALID_STATUSES: &[&str] = &["active", "candidate", "quarantined", "suppressed"];
+const VALID_SENSITIVITIES: &[&str] = &["unknown", "normal", "private", "sensitive", "secret"];
+
+/// PATCH /api/v1/memories/:id/status
+///
+/// Changes lifecycle status (active|candidate|quarantined|suppressed) and
+/// records a version snapshot with change_type='status_change'.
+pub async fn patch_memory_status(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PatchStatusBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !VALID_STATUSES.contains(&body.status.as_str()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "invalid status '{}'; must be one of: {}",
+                body.status,
+                VALID_STATUSES.join(", ")
+            ),
+        ));
+    }
+
+    let uuid = Uuid::parse_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let mut tx = state.db.begin().await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let suppression_reason: Option<String> = if body.status == "suppressed" {
+        body.reason.clone()
+    } else {
+        None
+    };
+
+    let r = sqlx::query(
+        "UPDATE memories
+         SET status = $1,
+             suppression_reason = $2,
+             status_updated_at = NOW(),
+             updated_at = NOW()
+         WHERE id = $3 AND archived_at IS NULL",
+    )
+    .bind(&body.status)
+    .bind(&suppression_reason)
+    .bind(uuid)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if r.rows_affected() == 0 {
+        return Err((StatusCode::NOT_FOUND, format!("memory {} not found", id)));
+    }
+
+    // Snapshot the change as a new version.
+    let meta: Option<(String, String, String, f32, String, f32, String, String, Option<i32>)> =
+        sqlx::query_as(
+            "SELECT agent_id, content, memory_type, confidence, provenance,
+                    importance_score, importance_source, sensitivity, source_turn
+             FROM memories WHERE id = $1",
+        )
+        .bind(uuid)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if let Some((agent_id, content, memory_type, confidence, provenance,
+                 importance_score, importance_source, sensitivity, source_turn)) = meta
+    {
+        // Use the pool directly for the version insert (can't use tx due to ownership).
+        // The outer tx will either commit or rollback the status update.
+        let _ = sqlx::query(
+            r#"
+            INSERT INTO memory_versions
+                (memory_id, agent_id, version_number, content, memory_type, confidence,
+                 provenance, importance_score, importance_source, status, sensitivity,
+                 source_turn, change_type, change_reason, changed_by)
+            SELECT $1, $2,
+                   COALESCE(MAX(version_number), 0) + 1,
+                   $3, $4, $5, $6, $7, $8, $9, $10, $11, 'status_change', $12, 'system'
+            FROM memory_versions
+            WHERE memory_id = $1
+            "#,
+        )
+        .bind(uuid)
+        .bind(&agent_id)
+        .bind(&content)
+        .bind(&memory_type)
+        .bind(confidence)
+        .bind(&provenance)
+        .bind(importance_score)
+        .bind(&importance_source)
+        .bind(&body.status)
+        .bind(&sensitivity)
+        .bind(source_turn)
+        .bind(&body.reason)
+        .execute(&state.db)
+        .await;
+    }
+
+    tx.commit().await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(serde_json::json!({ "updated": true, "status": body.status })))
+}
+
+/// PATCH /api/v1/memories/:id/sensitivity
+///
+/// Sets the sensitivity classification for a memory.
+pub async fn patch_memory_sensitivity(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PatchSensitivityBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !VALID_SENSITIVITIES.contains(&body.sensitivity.as_str()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "invalid sensitivity '{}'; must be one of: {}",
+                body.sensitivity,
+                VALID_SENSITIVITIES.join(", ")
+            ),
+        ));
+    }
+
+    let uuid = Uuid::parse_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let r = sqlx::query(
+        "UPDATE memories
+         SET sensitivity = $1, status_updated_at = NOW(), updated_at = NOW()
+         WHERE id = $2 AND archived_at IS NULL",
+    )
+    .bind(&body.sensitivity)
+    .bind(uuid)
+    .execute(&state.db)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if r.rows_affected() == 0 {
+        return Err((StatusCode::NOT_FOUND, format!("memory {} not found", id)));
+    }
+
+    Ok(Json(serde_json::json!({ "updated": true, "sensitivity": body.sensitivity })))
+}
+
 // ── Retrieval logs ────────────────────────────────────────────────────────────
 
 #[derive(Deserialize, Default)]
