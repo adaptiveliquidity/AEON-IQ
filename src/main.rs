@@ -147,6 +147,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/memories/:id/restore",                         post(api::restore_memory))
         .route("/archival/batches/:batch_id/restore",           post(api::restore_archival_batch))
         .route("/stats",                                        get(api::get_stats))
+        .route("/feedback",                                     post(api::post_feedback))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::check_management_key,

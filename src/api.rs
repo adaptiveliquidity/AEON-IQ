@@ -971,3 +971,55 @@ pub async fn import_memories(
         "errors": errors,
     })))
 }
+
+// ── Retrieval feedback ─────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct FeedbackBody {
+    pub agent_id: String,
+    pub memory_id: String,
+    /// Feedback score in [0, 1]: 1.0 = highly useful, 0.0 = not useful.
+    pub feedback: f64,
+}
+
+/// POST /api/v1/feedback
+///
+/// Records explicit retrieval-quality feedback for a memory and updates
+/// its utility_ema.  Callers (agents, MCP clients, dashboard users) use
+/// this to signal whether a retrieved memory was actually helpful.
+pub async fn post_feedback(
+    State(state): State<AppState>,
+    Json(body): Json<FeedbackBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let memory_uuid = Uuid::parse_str(&body.memory_id)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let feedback = body.feedback.clamp(0.0, 1.0);
+
+    // Insert feedback record.
+    sqlx::query(
+        "INSERT INTO retrieval_feedback (agent_id, memory_id, feedback)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(&body.agent_id)
+    .bind(memory_uuid)
+    .bind(feedback)
+    .execute(&state.db)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // Update utility_ema using the feedback signal.
+    let alpha = state.config.amp_config.feedback_ema_alpha;
+    sqlx::query(
+        "UPDATE memories
+         SET utility_ema = $1 * $2 + (1.0 - $1) * utility_ema
+         WHERE id = $3 AND archived_at IS NULL",
+    )
+    .bind(alpha)
+    .bind(feedback)
+    .bind(memory_uuid)
+    .execute(&state.db)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(serde_json::json!({ "recorded": true })))
+}
