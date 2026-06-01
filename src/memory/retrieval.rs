@@ -1,6 +1,10 @@
 use anyhow::Result;
 
-use crate::{embeddings::embed_text, models::{Memory, WorkingMemory, WorkingMemoryState}, AppState};
+use crate::{
+    embeddings::embed_text,
+    models::{Memory, MemorySearchRow, WorkingMemory, WorkingMemoryState},
+    AppState,
+};
 use super::store;
 
 /// Embed `query`, run a vector similarity search, and return memories whose
@@ -22,7 +26,7 @@ pub async fn retrieve_relevant(
     let start = std::time::Instant::now();
 
     let embedding = embed_text(state, query).await?;
-    let rows = store::search_memories_filtered(
+    let raw_rows = store::search_memories_filtered(
         state,
         agent_id,
         &embedding,
@@ -37,6 +41,46 @@ pub async fn retrieve_relevant(
         .metrics
         .vector_search_secs
         .observe(start.elapsed().as_secs_f64());
+
+    // Apply co-access graph bonuses when AMP or RMK is active.
+    //
+    // Each memory's cosine distance is reduced by `graph_bonus_weight ×
+    // neighbour_weight_sum`, promoting memories that frequently appear
+    // alongside other recently retrieved memories.  The rows are then
+    // re-sorted by the adjusted distance.
+    let rows: Vec<MemorySearchRow> =
+        if (state.config.amp_config.enabled || state.config.rmk_config.enabled)
+            && !raw_rows.is_empty()
+        {
+            let augmenter = crate::memory::amp::augmenter::RetrievalAugmenter::new(
+                crate::memory::amp::pressure::PressureManager::new(
+                    state.config.amp_config.pressure_params.clone(),
+                ),
+                crate::memory::amp::co_access::CoAccessGraph::new(
+                    state.db.clone(),
+                    state.config.amp_config.co_access_params.clone(),
+                ),
+                state.config.amp_config.co_access_params.graph_bonus_weight,
+            );
+
+            let pairs: Vec<(uuid::Uuid, f64)> = raw_rows
+                .iter()
+                .map(|r| (r.id, r.distance.unwrap_or(1.0)))
+                .collect();
+            let ids: Vec<uuid::Uuid> = raw_rows.iter().map(|r| r.id).collect();
+            let augmented = augmenter.augment_scores(ids, &pairs).await;
+
+            // Zip augmented distances back to rows and re-sort ascending.
+            let mut with_dist: Vec<(MemorySearchRow, f64)> = raw_rows
+                .into_iter()
+                .zip(augmented.into_iter().map(|(_, d)| d))
+                .collect();
+            with_dist
+                .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            with_dist.into_iter().map(|(r, _)| r).collect()
+        } else {
+            raw_rows
+        };
 
     let mut memories: Vec<Memory> = rows
         .iter()

@@ -6,14 +6,13 @@ use super::pressure::PressureManager;
 /// Combines pressure filtering and co-access bonuses into adjusted retrieval
 /// scores.
 ///
-/// The full implementation should:
-/// 1. Fetch pressure state for each candidate from the DB.
-/// 2. Filter out soft-evicted memories entirely.
-/// 3. Add `graph_bonus_weight × neighbor_weight_sum` to each remaining score.
-/// 4. Optionally multiply by `(1 − pressure)` as a soft penalty.
+/// Phase 1 co-access bonus: for each candidate memory, fetch its aggregate
+/// neighbour weight from `co_access_edges` and subtract a scaled bonus from
+/// the cosine distance.  Memories that frequently appear alongside other
+/// retrieved memories are promoted (lower effective distance = higher rank).
 ///
-/// The placeholder below returns the base similarities unchanged; swap it
-/// for the full logic once the AMP background job is wired up.
+/// Phase 2 will add pressure-based filtering: soft-evicted memories are
+/// removed from the candidate set entirely before scoring.
 pub struct RetrievalAugmenter {
     pub pressure_manager: PressureManager,
     pub co_access_graph: CoAccessGraph,
@@ -33,13 +32,29 @@ impl RetrievalAugmenter {
         }
     }
 
-    /// Return adjusted `(memory_id, score)` pairs.
-    /// `_candidate_ids` is reserved for future pressure-lookup filtering.
+    /// Return adjusted `(memory_id, distance)` pairs.
+    ///
+    /// `similarities` carries the vector-search cosine distances
+    /// (lower = more similar).  The co-access bonus is subtracted so that
+    /// memories with strong graph connections are ranked higher.
+    ///
+    /// `_candidate_ids` is reserved for the pressure-filtering pass (Phase 2).
     pub async fn augment_scores(
         &self,
         _candidate_ids: Vec<Uuid>,
         similarities: &[(Uuid, f64)],
     ) -> Vec<(Uuid, f64)> {
-        similarities.to_vec()
+        if self.graph_bonus_weight <= 0.0 {
+            return similarities.to_vec();
+        }
+
+        let mut result = Vec::with_capacity(similarities.len());
+        for &(id, dist) in similarities {
+            let bonus = self.co_access_graph.get_neighbor_weight_sum(id).await
+                * self.graph_bonus_weight;
+            // Clamp to 0 so we never invert the distance ordering.
+            result.push((id, (dist - bonus).max(0.0)));
+        }
+        result
     }
 }
