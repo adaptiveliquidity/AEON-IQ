@@ -205,6 +205,268 @@ const TOOLS: Tool[] = [
       },
     },
   },
+  {
+    name: "list_agents",
+    description: "List all known agents with their memory counts.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "get_stats",
+    description: "Get global memory and agent statistics.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "get_retrievals",
+    description: "List retrieval logs for an agent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: {
+          type: "string",
+          description: "Agent identifier. Defaults to MEMORYOS_AGENT_ID env var.",
+        },
+        limit: {
+          type: "number",
+          description: "Page size (default: 50).",
+        },
+        offset: {
+          type: "number",
+          description: "Pagination offset (default: 0).",
+        },
+        session_id: {
+          type: "string",
+          description: "Optional session filter.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_versions",
+    description: "Get full version history for a memory.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memory_id: {
+          type: "string",
+          description: "UUID of the memory.",
+        },
+      },
+      required: ["memory_id"],
+    },
+  },
+  {
+    name: "set_status",
+    description: "Update memory lifecycle status (active/candidate/quarantined/suppressed).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memory_id: {
+          type: "string",
+          description: "UUID of the memory.",
+        },
+        status: {
+          type: "string",
+          enum: ["active", "candidate", "quarantined", "suppressed"],
+          description: "Target lifecycle status.",
+        },
+        reason: {
+          type: "string",
+          description: "Optional reason (used for suppressed status).",
+        },
+      },
+      required: ["memory_id", "status"],
+    },
+  },
+  {
+    name: "submit_feedback",
+    description: "Submit retrieval-quality feedback for a memory (0.0-1.0).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: {
+          type: "string",
+          description: "Agent identifier. Defaults to MEMORYOS_AGENT_ID env var.",
+        },
+        memory_id: {
+          type: "string",
+          description: "UUID of the memory being rated.",
+        },
+        feedback: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description: "Feedback score between 0.0 and 1.0.",
+        },
+      },
+      required: ["memory_id", "feedback"],
+    },
+  },
+  {
+    name: "delete_agent",
+    description: "Delete an agent and all associated memory data.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: {
+          type: "string",
+          description: "Agent identifier. Defaults to MEMORYOS_AGENT_ID env var.",
+        },
+      },
+    },
+  },
+  {
+    name: "patch_memory",
+    description: "Update memory content by ID.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memory_id: { type: "string", description: "Memory UUID." },
+        content: { type: "string", description: "Updated memory content." },
+      },
+      required: ["memory_id", "content"],
+    },
+  },
+  {
+    name: "restore_memory",
+    description: "Restore a tombstoned memory by ID.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memory_id: { type: "string", description: "Memory UUID." },
+      },
+      required: ["memory_id"],
+    },
+  },
+  {
+    name: "list_archived_memories",
+    description: "List archived memories for an agent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string", description: "Agent identifier." },
+        limit: { type: "number", description: "Page size (default 50)." },
+        offset: { type: "number", description: "Pagination offset (default 0)." },
+      },
+    },
+  },
+  {
+    name: "list_archival_batches",
+    description: "List archival batches for an agent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string", description: "Agent identifier." },
+        limit: { type: "number", description: "Page size (default 50)." },
+        offset: { type: "number", description: "Pagination offset (default 0)." },
+      },
+    },
+  },
+  {
+    name: "restore_archival_batch",
+    description: "Restore a full archival batch by batch ID.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        batch_id: { type: "string", description: "Archival batch UUID." },
+      },
+      required: ["batch_id"],
+    },
+  },
+  {
+    name: "trigger_archival",
+    description: "Trigger one archival compaction run for an agent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string", description: "Agent identifier." },
+      },
+    },
+  },
+  {
+    name: "bulk_memories",
+    description: "Run bulk archive/delete over filtered memories.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string", description: "Agent identifier." },
+        action: { type: "string", enum: ["archive", "delete"] },
+        filter: { type: "object", description: "Bulk filter object." },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "import_agent",
+    description: "Import an agent NDJSON export payload.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string", description: "Agent identifier." },
+        ndjson: { type: "string", description: "NDJSON content to import." },
+      },
+      required: ["ndjson"],
+    },
+  },
+  {
+    name: "get_session",
+    description: "Get one session detail by session ID.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string", description: "Agent identifier." },
+        session_id: { type: "string", description: "Session ID." },
+      },
+      required: ["session_id"],
+    },
+  },
+  {
+    name: "delete_session",
+    description: "Delete one session working memory by session ID.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string", description: "Agent identifier." },
+        session_id: { type: "string", description: "Session ID." },
+      },
+      required: ["session_id"],
+    },
+  },
+  {
+    name: "resolve_conflict",
+    description: "Resolve a conflict (keep_a, keep_b, keep_both, dismissed).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        conflict_id: { type: "string", description: "Conflict UUID." },
+        resolution: {
+          type: "string",
+          enum: ["keep_a", "keep_b", "keep_both", "dismissed"],
+        },
+      },
+      required: ["conflict_id", "resolution"],
+    },
+  },
+  {
+    name: "set_sensitivity",
+    description: "Set memory sensitivity classification.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memory_id: { type: "string", description: "Memory UUID." },
+        sensitivity: {
+          type: "string",
+          enum: ["unknown", "normal", "private", "sensitive", "secret"],
+        },
+      },
+      required: ["memory_id", "sensitivity"],
+    },
+  },
 ];
 
 // ── Tool handlers ─────────────────────────────────────────────────────────────
@@ -284,8 +546,10 @@ async function handleGetConflicts(
   args: Record<string, unknown>
 ): Promise<string> {
   const id = agentId(args);
+  const includeResolved = (args.include_resolved as boolean | undefined) ?? false;
+  const qs = new URLSearchParams({ include_resolved: String(includeResolved) });
   const result = await apiFetch(
-    `/api/v1/agents/${encodeURIComponent(id)}/conflicts`
+    `/api/v1/agents/${encodeURIComponent(id)}/conflicts?${qs.toString()}`
   );
   return JSON.stringify(result, null, 2);
 }
@@ -301,6 +565,201 @@ async function handleExportAgent(
     throw new Error(`Export failed ${res.status}: ${text}`);
   }
   return await res.text();
+}
+
+async function handleListAgents(): Promise<string> {
+  const result = await apiFetch("/api/v1/agents");
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleGetStats(): Promise<string> {
+  const result = await apiFetch("/api/v1/stats");
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleGetRetrievals(args: Record<string, unknown>): Promise<string> {
+  const id = agentId(args);
+  const limit = (args.limit as number | undefined) ?? 50;
+  const offset = (args.offset as number | undefined) ?? 0;
+  const sessionId = args.session_id as string | undefined;
+  const qs = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+    ...(sessionId ? { session_id: sessionId } : {}),
+  });
+  const result = await apiFetch(
+    `/api/v1/agents/${encodeURIComponent(id)}/retrievals?${qs.toString()}`
+  );
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleGetVersions(args: Record<string, unknown>): Promise<string> {
+  const memoryId = args.memory_id as string;
+  const result = await apiFetch(`/api/v1/memories/${encodeURIComponent(memoryId)}/versions`);
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleSetStatus(args: Record<string, unknown>): Promise<string> {
+  const memoryId = args.memory_id as string;
+  const status = args.status as string;
+  const reason = args.reason as string | undefined;
+  const result = await apiFetch(`/api/v1/memories/${encodeURIComponent(memoryId)}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status, reason }),
+  });
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleSubmitFeedback(args: Record<string, unknown>): Promise<string> {
+  const id = agentId(args);
+  const body = {
+    agent_id: id,
+    memory_id: args.memory_id as string,
+    feedback: (args.feedback as number | undefined) ?? 1.0,
+  };
+  const result = await apiFetch("/api/v1/feedback", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleDeleteAgent(args: Record<string, unknown>): Promise<string> {
+  const id = agentId(args);
+  await apiFetch(`/api/v1/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return `Agent ${id} deleted.`;
+}
+
+async function handlePatchMemory(args: Record<string, unknown>): Promise<string> {
+  const memoryId = args.memory_id as string;
+  const content = args.content as string;
+  const result = await apiFetch(`/api/v1/memories/${encodeURIComponent(memoryId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ content }),
+  });
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleRestoreMemory(args: Record<string, unknown>): Promise<string> {
+  const memoryId = args.memory_id as string;
+  const result = await apiFetch(`/api/v1/memories/${encodeURIComponent(memoryId)}/restore`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleListArchivedMemories(args: Record<string, unknown>): Promise<string> {
+  const id = agentId(args);
+  const limit = (args.limit as number | undefined) ?? 50;
+  const offset = (args.offset as number | undefined) ?? 0;
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const result = await apiFetch(
+    `/api/v1/agents/${encodeURIComponent(id)}/memories/archived?${qs.toString()}`
+  );
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleListArchivalBatches(args: Record<string, unknown>): Promise<string> {
+  const id = agentId(args);
+  const limit = (args.limit as number | undefined) ?? 50;
+  const offset = (args.offset as number | undefined) ?? 0;
+  const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const result = await apiFetch(
+    `/api/v1/agents/${encodeURIComponent(id)}/archival/batches?${qs.toString()}`
+  );
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleRestoreArchivalBatch(args: Record<string, unknown>): Promise<string> {
+  const batchId = args.batch_id as string;
+  const result = await apiFetch(
+    `/api/v1/archival/batches/${encodeURIComponent(batchId)}/restore`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    }
+  );
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleTriggerArchival(args: Record<string, unknown>): Promise<string> {
+  const id = agentId(args);
+  const result = await apiFetch(
+    `/api/v1/agents/${encodeURIComponent(id)}/archival/trigger`,
+    {
+      method: "POST",
+      body: JSON.stringify({}),
+    }
+  );
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleBulkMemories(args: Record<string, unknown>): Promise<string> {
+  const id = agentId(args);
+  const action = (args.action as string | undefined) ?? "archive";
+  const filter = (args.filter as Record<string, unknown> | undefined) ?? {};
+  const result = await apiFetch(`/api/v1/agents/${encodeURIComponent(id)}/memories/bulk`, {
+    method: "POST",
+    body: JSON.stringify({ action, filter }),
+  });
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleImportAgent(args: Record<string, unknown>): Promise<string> {
+  const id = agentId(args);
+  const ndjson = args.ndjson as string;
+  const result = await apiFetch(`/api/v1/agents/${encodeURIComponent(id)}/import`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/x-ndjson" },
+    body: ndjson,
+  });
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleGetSession(args: Record<string, unknown>): Promise<string> {
+  const id = agentId(args);
+  const sessionId = args.session_id as string;
+  const result = await apiFetch(
+    `/api/v1/agents/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}`
+  );
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleDeleteSession(args: Record<string, unknown>): Promise<string> {
+  const id = agentId(args);
+  const sessionId = args.session_id as string;
+  const result = await apiFetch(
+    `/api/v1/agents/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" }
+  );
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleResolveConflict(args: Record<string, unknown>): Promise<string> {
+  const conflictId = args.conflict_id as string;
+  const resolution = args.resolution as string;
+  const result = await apiFetch(
+    `/api/v1/conflicts/${encodeURIComponent(conflictId)}/resolve`,
+    {
+      method: "POST",
+      body: JSON.stringify({ resolution }),
+    }
+  );
+  return JSON.stringify(result, null, 2);
+}
+
+async function handleSetSensitivity(args: Record<string, unknown>): Promise<string> {
+  const memoryId = args.memory_id as string;
+  const sensitivity = args.sensitivity as string;
+  const result = await apiFetch(
+    `/api/v1/memories/${encodeURIComponent(memoryId)}/sensitivity`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ sensitivity }),
+    }
+  );
+  return JSON.stringify(result, null, 2);
 }
 
 // ── Server bootstrap ──────────────────────────────────────────────────────────
@@ -349,6 +808,63 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case "export_agent":
         text = await handleExportAgent(a);
+        break;
+      case "list_agents":
+        text = await handleListAgents();
+        break;
+      case "get_stats":
+        text = await handleGetStats();
+        break;
+      case "get_retrievals":
+        text = await handleGetRetrievals(a);
+        break;
+      case "get_versions":
+        text = await handleGetVersions(a);
+        break;
+      case "set_status":
+        text = await handleSetStatus(a);
+        break;
+      case "submit_feedback":
+        text = await handleSubmitFeedback(a);
+        break;
+      case "delete_agent":
+        text = await handleDeleteAgent(a);
+        break;
+      case "patch_memory":
+        text = await handlePatchMemory(a);
+        break;
+      case "restore_memory":
+        text = await handleRestoreMemory(a);
+        break;
+      case "list_archived_memories":
+        text = await handleListArchivedMemories(a);
+        break;
+      case "list_archival_batches":
+        text = await handleListArchivalBatches(a);
+        break;
+      case "restore_archival_batch":
+        text = await handleRestoreArchivalBatch(a);
+        break;
+      case "trigger_archival":
+        text = await handleTriggerArchival(a);
+        break;
+      case "bulk_memories":
+        text = await handleBulkMemories(a);
+        break;
+      case "import_agent":
+        text = await handleImportAgent(a);
+        break;
+      case "get_session":
+        text = await handleGetSession(a);
+        break;
+      case "delete_session":
+        text = await handleDeleteSession(a);
+        break;
+      case "resolve_conflict":
+        text = await handleResolveConflict(a);
+        break;
+      case "set_sensitivity":
+        text = await handleSetSensitivity(a);
         break;
       default:
         throw new Error(`Unknown tool: ${name}`);

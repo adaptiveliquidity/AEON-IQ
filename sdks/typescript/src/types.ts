@@ -2,16 +2,19 @@
 
 export interface Memory {
   id: string;
-  agent_id: string;
+  agent_id?: string;
   session_id?: string;
   content: string;
   memory_type: string;
   confidence: number;
-  provenance: string;
+  provenance?: string;
   created_at: string;
+  updated_at?: string;
   source_turn?: number;
   importance_score: number;
-  importance_source: string;
+  importance_source?: string;
+  status?: string;
+  sensitivity?: string;
 }
 
 export interface MemorySearchResult {
@@ -43,9 +46,9 @@ export interface ImportResult {
 }
 
 export interface Stats {
-  agents: number;
-  memories: number;
-  archived_memories: number;
+  agent_count: number;
+  memory_count: number;
+  tokens_saved_estimate: number;
 }
 
 export interface CreateMemoryOptions {

@@ -62,7 +62,7 @@ export class MemoryClient {
     agentId: string,
     content: string,
     options: CreateMemoryOptions = {}
-  ): Promise<Memory> {
+  ): Promise<{ id: string; success: boolean }> {
     const body = {
       content,
       memory_type: options.memory_type ?? "semantic",
@@ -71,10 +71,17 @@ export class MemoryClient {
       confidence: options.confidence ?? 0.95,
       provenance: options.provenance ?? "user_stated",
     };
-    return this.post<Memory>(
+    return this.post<{ id: string; success: boolean }>(
       `/api/v1/agents/${enc(agentId)}/memories`,
       body
     );
+  }
+
+  /** Update memory content by ID. */
+  async update(memoryId: string, content: string): Promise<{ updated: boolean }> {
+    return this.patch<{ updated: boolean }>(`/api/v1/memories/${enc(memoryId)}`, {
+      content,
+    });
   }
 
   /** Hard-delete a memory by ID. */
@@ -88,16 +95,16 @@ export class MemoryClient {
     query: string,
     limit = 5
   ): Promise<MemorySearchResult> {
-    const data = await this.post<{ memories: Memory[] }>(
+    const data = await this.post<{ results?: Memory[]; memories?: Memory[] }>(
       "/api/v1/memories/search",
       { query, agent_id: agentId, limit }
     );
-    return { memories: data.memories ?? [], query };
+    return { memories: data.results ?? data.memories ?? [], query };
   }
 
   /** Restore a tombstoned memory. */
-  async restoreMemory(memoryId: string): Promise<Memory> {
-    return this.post<Memory>(
+  async restoreMemory(memoryId: string): Promise<{ restored: boolean }> {
+    return this.post<{ restored: boolean }>(
       `/api/v1/memories/${enc(memoryId)}/restore`,
       {}
     );
@@ -138,10 +145,44 @@ export class MemoryClient {
   }
 
   /** Restore an entire archival batch (un-tombstone L2, re-tombstone L3). */
-  async restoreBatch(batchId: string): Promise<ArchivalBatch> {
-    return this.post<ArchivalBatch>(
+  async restoreBatch(
+    batchId: string
+  ): Promise<{ restored: boolean; batch_id: string; l2_restored: number; l3_tombstoned: number }> {
+    return this.post<{ restored: boolean; batch_id: string; l2_restored: number; l3_tombstoned: number }>(
       `/api/v1/archival/batches/${enc(batchId)}/restore`,
       {}
+    );
+  }
+
+  /** Trigger one archival run for an agent. */
+  async triggerArchival(agentId: string): Promise<Record<string, unknown>> {
+    return this.post<Record<string, unknown>>(
+      `/api/v1/agents/${enc(agentId)}/archival/trigger`,
+      {}
+    );
+  }
+
+  /** List archived memories for an agent. */
+  async listArchivedMemories(
+    agentId: string,
+    options: ListMemoriesOptions = {}
+  ): Promise<Memory[]> {
+    const { limit = 50, offset = 0 } = options;
+    const data = await this.get<{ memories: Memory[] }>(
+      `/api/v1/agents/${enc(agentId)}/memories/archived?limit=${limit}&offset=${offset}`
+    );
+    return data.memories ?? [];
+  }
+
+  /** Run bulk archive/delete for an agent. */
+  async bulkOperation(
+    agentId: string,
+    action: "archive" | "delete",
+    filter: Record<string, unknown>
+  ): Promise<{ affected: number }> {
+    return this.post<{ affected: number }>(
+      `/api/v1/agents/${enc(agentId)}/memories/bulk`,
+      { action, filter }
     );
   }
 
@@ -175,6 +216,79 @@ export class MemoryClient {
     return this.get<Stats>("/api/v1/stats");
   }
 
+  /** List all agents. */
+  async listAgents(): Promise<{ agents: Array<{ agent_id: string; memory_count: number }>; total: number }> {
+    return this.get<{ agents: Array<{ agent_id: string; memory_count: number }>; total: number }>(
+      "/api/v1/agents"
+    );
+  }
+
+  /** Delete an agent and all associated data. */
+  async deleteAgent(agentId: string): Promise<void> {
+    await this.del(`/api/v1/agents/${enc(agentId)}`);
+  }
+
+  /** List conflicts for an agent. */
+  async listConflicts(agentId: string, includeResolved = false): Promise<Record<string, unknown>> {
+    return this.get<Record<string, unknown>>(
+      `/api/v1/agents/${enc(agentId)}/conflicts?include_resolved=${includeResolved}`
+    );
+  }
+
+  /** Resolve a conflict. */
+  async resolveConflict(conflictId: string, resolution: string): Promise<Record<string, unknown>> {
+    return this.post<Record<string, unknown>>(
+      `/api/v1/conflicts/${enc(conflictId)}/resolve`,
+      { resolution }
+    );
+  }
+
+  /** List retrieval logs for an agent. */
+  async listRetrievals(
+    agentId: string,
+    options: { limit?: number; offset?: number; sessionId?: string } = {}
+  ): Promise<Record<string, unknown>> {
+    const { limit = 50, offset = 0, sessionId } = options;
+    const qs = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+      ...(sessionId ? { session_id: sessionId } : {}),
+    });
+    return this.get<Record<string, unknown>>(
+      `/api/v1/agents/${enc(agentId)}/retrievals?${qs.toString()}`
+    );
+  }
+
+  /** List all versions for a memory. */
+  async listMemoryVersions(memoryId: string): Promise<Record<string, unknown>> {
+    return this.get<Record<string, unknown>>(`/api/v1/memories/${enc(memoryId)}/versions`);
+  }
+
+  /** Patch memory status. */
+  async patchMemoryStatus(memoryId: string, status: string, reason?: string): Promise<Record<string, unknown>> {
+    return this.patch<Record<string, unknown>>(`/api/v1/memories/${enc(memoryId)}/status`, {
+      status,
+      reason,
+    });
+  }
+
+  /** Patch memory sensitivity. */
+  async patchMemorySensitivity(memoryId: string, sensitivity: string): Promise<Record<string, unknown>> {
+    return this.patch<Record<string, unknown>>(
+      `/api/v1/memories/${enc(memoryId)}/sensitivity`,
+      { sensitivity }
+    );
+  }
+
+  /** Submit retrieval feedback. */
+  async postFeedback(agentId: string, memoryId: string, feedback: number): Promise<{ recorded: boolean }> {
+    return this.post<{ recorded: boolean }>("/api/v1/feedback", {
+      agent_id: agentId,
+      memory_id: memoryId,
+      feedback,
+    });
+  }
+
   // ── Private helpers ───────────────────────────────────────────────────────
 
   private async get<T>(path: string): Promise<T> {
@@ -202,6 +316,17 @@ export class MemoryClient {
       headers: this.headers,
     });
     await assertOk(res);
+  }
+
+  private async patch<T>(path: string, body: unknown): Promise<T> {
+    const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      method: "PATCH",
+      headers: this.headers,
+      body: JSON.stringify(body),
+    });
+    await assertOk(res);
+    if (res.status === 204) return {} as T;
+    return res.json() as Promise<T>;
   }
 }
 

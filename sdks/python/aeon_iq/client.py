@@ -74,7 +74,7 @@ class MemoryClient:
         importance: float = 0.8,
         confidence: float = 0.95,
         provenance: str = "user_stated",
-    ) -> Memory:
+    ) -> dict:
         """Manually create a memory for an agent."""
         body = {
             "content": content,
@@ -84,8 +84,11 @@ class MemoryClient:
             "confidence": confidence,
             "provenance": provenance,
         }
-        resp = self._post(f"/api/v1/agents/{quote(agent_id)}/memories", body)
-        return Memory.from_dict(resp)
+        return self._post(f"/api/v1/agents/{quote(agent_id)}/memories", body)
+
+    def update(self, memory_id: str, content: str) -> dict:
+        """Update memory content by ID."""
+        return self._patch(f"/api/v1/memories/{quote(memory_id)}", {"content": content})
 
     def delete(self, memory_id: str) -> None:
         """Hard-delete a memory by ID."""
@@ -102,10 +105,9 @@ class MemoryClient:
         resp = self._post("/api/v1/memories/search", body)
         return MemorySearchResult.from_dict(resp, query=query)
 
-    def restore_memory(self, memory_id: str) -> Memory:
+    def restore_memory(self, memory_id: str) -> dict:
         """Restore a tombstoned memory."""
-        resp = self._post(f"/api/v1/memories/{quote(memory_id)}/restore", {})
-        return Memory.from_dict(resp)
+        return self._post(f"/api/v1/memories/{quote(memory_id)}/restore", {})
 
     # ── Sessions ──────────────────────────────────────────────────────────────
 
@@ -134,10 +136,45 @@ class MemoryClient:
         resp = self._get(f"/api/v1/agents/{quote(agent_id)}/archival/batches")
         return [ArchivalBatch.from_dict(b) for b in resp.get("batches", [])]
 
-    def restore_batch(self, batch_id: str) -> ArchivalBatch:
+    def restore_batch(self, batch_id: str) -> dict:
         """Restore an entire archival batch (un-tombstone L2, re-tombstone L3)."""
-        resp = self._post(f"/api/v1/archival/batches/{quote(batch_id)}/restore", {})
-        return ArchivalBatch.from_dict(resp)
+        return self._post(f"/api/v1/archival/batches/{quote(batch_id)}/restore", {})
+
+    def trigger_archival(self, agent_id: str) -> dict:
+        """Trigger one archival run for an agent."""
+        return self._post(f"/api/v1/agents/{quote(agent_id)}/archival/trigger", {})
+
+    def list_archived_memories(
+        self, agent_id: str, limit: int = 50, offset: int = 0
+    ) -> list[Memory]:
+        """List archived memories for an agent."""
+        resp = self._get(
+            f"/api/v1/agents/{quote(agent_id)}/memories/archived",
+            params={"limit": limit, "offset": offset},
+        )
+        return [Memory.from_dict(m) for m in resp.get("memories", [])]
+
+    def bulk_operation(
+        self,
+        agent_id: str,
+        action: str,
+        *,
+        session_id: Optional[str] = None,
+        memory_type: Optional[str] = None,
+        older_than: Optional[str] = None,
+        importance_below: Optional[float] = None,
+    ) -> dict:
+        """Run bulk archive/delete by filter."""
+        body = {
+            "action": action,
+            "filter": {
+                "session_id": session_id,
+                "memory_type": memory_type,
+                "older_than": older_than,
+                "importance_below": importance_below,
+            },
+        }
+        return self._post(f"/api/v1/agents/{quote(agent_id)}/memories/bulk", body)
 
     # ── Export / Import ───────────────────────────────────────────────────────
 
@@ -194,6 +231,68 @@ class MemoryClient:
         """Return global memory counts and agent stats."""
         return self._get("/api/v1/stats")
 
+    def list_agents(self) -> dict:
+        """List all agents."""
+        return self._get("/api/v1/agents")
+
+    def delete_agent(self, agent_id: str) -> None:
+        """Delete an agent and all associated data."""
+        self._delete(f"/api/v1/agents/{quote(agent_id)}")
+
+    def list_conflicts(self, agent_id: str, include_resolved: bool = False) -> dict:
+        """List conflicts for an agent."""
+        return self._get(
+            f"/api/v1/agents/{quote(agent_id)}/conflicts",
+            params={"include_resolved": str(include_resolved).lower()},
+        )
+
+    def resolve_conflict(self, conflict_id: str, resolution: str) -> dict:
+        """Resolve a conflict using keep_a|keep_b|keep_both|dismissed."""
+        return self._post(
+            f"/api/v1/conflicts/{quote(conflict_id)}/resolve",
+            {"resolution": resolution},
+        )
+
+    def list_retrievals(
+        self,
+        agent_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        session_id: Optional[str] = None,
+    ) -> dict:
+        """List retrieval logs for an agent."""
+        params: dict[str, object] = {"limit": limit, "offset": offset}
+        if session_id is not None:
+            params["session_id"] = session_id
+        return self._get(f"/api/v1/agents/{quote(agent_id)}/retrievals", params=params)
+
+    def list_memory_versions(self, memory_id: str) -> dict:
+        """List full version history for one memory."""
+        return self._get(f"/api/v1/memories/{quote(memory_id)}/versions")
+
+    def patch_memory_status(
+        self, memory_id: str, status: str, reason: Optional[str] = None
+    ) -> dict:
+        """Update memory status."""
+        return self._patch(
+            f"/api/v1/memories/{quote(memory_id)}/status",
+            {"status": status, "reason": reason},
+        )
+
+    def patch_memory_sensitivity(self, memory_id: str, sensitivity: str) -> dict:
+        """Update memory sensitivity."""
+        return self._patch(
+            f"/api/v1/memories/{quote(memory_id)}/sensitivity",
+            {"sensitivity": sensitivity},
+        )
+
+    def post_feedback(self, agent_id: str, memory_id: str, feedback: float) -> dict:
+        """Submit retrieval quality feedback."""
+        return self._post(
+            "/api/v1/feedback",
+            {"agent_id": agent_id, "memory_id": memory_id, "feedback": feedback},
+        )
+
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _get(self, path: str, params: Optional[dict] = None) -> dict:
@@ -212,6 +311,13 @@ class MemoryClient:
     def _delete(self, path: str) -> None:
         resp = self._client.delete(path)
         _raise_for_status(resp)
+
+    def _patch(self, path: str, body: dict) -> dict:
+        resp = self._client.patch(path, json=body)
+        _raise_for_status(resp)
+        if resp.status_code == 204 or not resp.content:
+            return {}
+        return resp.json()
 
     def __enter__(self) -> "MemoryClient":
         return self
