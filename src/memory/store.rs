@@ -355,7 +355,10 @@ pub async fn search_memories_filtered(
         qb.push_bind(sid);
     }
 
-    qb.push("),\nranked AS (\n    SELECT *,\n           cosine_dist\n           * (1.0 + ");
+    // Exponential decay: exp(decay_rate × days_stale).
+    // When decay_rate = 0.0, exp(0) = 1.0 → collapses to pure cosine similarity.
+    // This gives a smoother, bounded penalty compared to the linear (1 + k·d) form.
+    qb.push("),\nranked AS (\n    SELECT *,\n           cosine_dist\n           * exp(");
     qb.push_bind(decay_rate);
     qb.push(" * days_stale)\n           * (1.0 + ");
     qb.push_bind(importance_boost);
