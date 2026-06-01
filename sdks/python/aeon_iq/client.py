@@ -141,7 +141,21 @@ class MemoryClient:
         return self._post(f"/api/v1/archival/batches/{quote(batch_id)}/restore", {})
 
     def trigger_archival(self, agent_id: str) -> dict:
-        """Trigger one archival run for an agent."""
+        """Trigger one archival run for an agent.
+
+        Returns the JSON dict from the kernel. On a successful run the keys are::
+
+            {
+                "batch_id":        "<uuid>",
+                "source_count":    <int>,
+                "l3_count":        <int>,   # compressed semantic facts
+                "narrative_count": <int>,   # 0 or 1 narrative L3 memory
+                "status":          "completed"
+            }
+
+        When fewer than ``ARCHIVAL_MIN_MEMORIES`` candidates exist, the response
+        is ``{"status": "skipped", "reason": "..."}``.
+        """
         return self._post(f"/api/v1/agents/{quote(agent_id)}/archival/trigger", {})
 
     def list_archived_memories(

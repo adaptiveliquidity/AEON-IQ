@@ -407,7 +407,8 @@ const TOOLS: Tool[] = [
   },
   {
     name: "trigger_archival",
-    description: "Trigger one archival compaction run for an agent.",
+    description:
+      "Trigger one archival compaction run for an agent. Each run produces compressed L3 facts and (when the LLM returns one) a 2-3 sentence narrative L3 memory.",
     inputSchema: {
       type: "object",
       properties: {

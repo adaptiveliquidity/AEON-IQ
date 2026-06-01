@@ -181,7 +181,15 @@ export class MemoryClient {
     );
   }
 
-  /** Trigger one archival run for an agent. */
+  /**
+   * Trigger one archival run for an agent.
+   *
+   * On a successful run returns
+   * `{ batch_id, source_count, l3_count, narrative_count, status: "completed" }`.
+   * When the agent has fewer than `ARCHIVAL_MIN_MEMORIES` candidates the kernel
+   * returns `{ status: "skipped", reason }` instead. `narrative_count` is `0`
+   * or `1` and indicates whether a 2-3 sentence narrative memory was stored.
+   */
   async triggerArchival(agentId: string): Promise<Record<string, unknown>> {
     return this.post<Record<string, unknown>>(
       `/api/v1/agents/${enc(agentId)}/archival/trigger`,
