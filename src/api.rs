@@ -982,6 +982,84 @@ pub async fn import_memories(
     })))
 }
 
+// ── Retrieval logs ────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Default)]
+pub struct RetrievalLogQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+    pub session_id: Option<String>,
+}
+
+/// GET /api/v1/agents/:id/retrievals
+///
+/// Returns paginated retrieval log entries for an agent.
+pub async fn list_retrievals(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(q): Query<RetrievalLogQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let limit = q.limit.unwrap_or(50).min(200);
+    let offset = q.offset.unwrap_or(0);
+
+    let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+        "SELECT id, agent_id, session_id, query_hash, query_text,
+                candidate_memory_ids, injected_memory_ids, suppressed_memory_ids,
+                scores, latency_ms, created_at
+         FROM memory_retrieval_logs
+         WHERE agent_id = ",
+    );
+    qb.push_bind(&agent_id);
+
+    if let Some(ref sid) = q.session_id {
+        qb.push(" AND session_id = ");
+        qb.push_bind(sid);
+    }
+
+    qb.push(" ORDER BY created_at DESC LIMIT ");
+    qb.push_bind(limit);
+    qb.push(" OFFSET ");
+    qb.push_bind(offset);
+
+    let rows = qb
+        .build()
+        .fetch_all(&state.db)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    use sqlx::Row;
+    let entries: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.get::<uuid::Uuid, _>("id").to_string(),
+                "agent_id": r.get::<String, _>("agent_id"),
+                "session_id": r.get::<Option<String>, _>("session_id"),
+                "query_hash": r.get::<String, _>("query_hash"),
+                "query_text": r.get::<Option<String>, _>("query_text"),
+                "candidate_memory_ids": r.get::<Vec<uuid::Uuid>, _>("candidate_memory_ids")
+                    .iter().map(|u| u.to_string()).collect::<Vec<_>>(),
+                "injected_memory_ids": r.get::<Vec<uuid::Uuid>, _>("injected_memory_ids")
+                    .iter().map(|u| u.to_string()).collect::<Vec<_>>(),
+                "suppressed_memory_ids": r.get::<Vec<uuid::Uuid>, _>("suppressed_memory_ids")
+                    .iter().map(|u| u.to_string()).collect::<Vec<_>>(),
+                "scores": r.get::<serde_json::Value, _>("scores"),
+                "latency_ms": r.get::<Option<i32>, _>("latency_ms"),
+                "created_at": r.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
+            })
+        })
+        .collect();
+
+    let total = entries.len();
+    Ok(Json(serde_json::json!({
+        "agent_id": agent_id,
+        "retrievals": entries,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    })))
+}
+
 // ── Memory versions ───────────────────────────────────────────────────────────
 
 #[derive(Serialize)]

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use sha2::{Digest, Sha256};
 
 use crate::{
     embeddings::embed_text,
@@ -24,6 +25,7 @@ use super::store;
 pub async fn retrieve_relevant(
     state: &AppState,
     agent_id: &str,
+    session_id: &str,
     query: &str,
     limit: i64,
     threshold: f64,
@@ -199,6 +201,61 @@ pub async fn retrieve_relevant(
                         tracing::warn!("co-access record failed: {}", e);
                     }
                 }
+            }
+        });
+    }
+
+    // Fire-and-forget retrieval log.  Failures are silently ignored so the
+    // hot path is never blocked by a logging failure.
+    {
+        let latency_ms = start.elapsed().as_millis() as i32;
+        let memory_ids: Vec<uuid::Uuid> = memories.iter().map(|m| m.id).collect();
+        let query_hash = hex::encode(Sha256::digest(query.as_bytes()));
+        let query_text_stored = if state.config.retrieval_log_query_text {
+            Some(query.to_string())
+        } else {
+            None
+        };
+        // Build per-memory score JSON.
+        let scores: serde_json::Value = serde_json::Value::Object(
+            rows.iter()
+                .map(|r| {
+                    (
+                        r.id.to_string(),
+                        serde_json::json!({
+                            "cosine_dist": r.distance.unwrap_or(1.0),
+                            "importance_score": r.importance_score,
+                            "confidence": r.confidence,
+                        }),
+                    )
+                })
+                .collect(),
+        );
+        let db = state.db.clone();
+        let agent_id_log = agent_id.to_string();
+        let session_id_log = session_id.to_string();
+        tokio::spawn(async move {
+            let result = sqlx::query(
+                r#"
+                INSERT INTO memory_retrieval_logs
+                    (agent_id, session_id, query_text, query_hash,
+                     candidate_memory_ids, injected_memory_ids, suppressed_memory_ids,
+                     scores, latency_ms)
+                VALUES ($1, $2, $3, $4, $5, $6, '{}', $7, $8)
+                "#,
+            )
+            .bind(&agent_id_log)
+            .bind(&session_id_log)
+            .bind(&query_text_stored)
+            .bind(&query_hash)
+            .bind(&memory_ids)
+            .bind(&memory_ids) // injected = same as candidate at this layer
+            .bind(&scores)
+            .bind(latency_ms)
+            .execute(&db)
+            .await;
+            if let Err(e) = result {
+                tracing::warn!("retrieval log insert failed: {}", e);
             }
         });
     }

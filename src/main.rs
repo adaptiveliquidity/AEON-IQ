@@ -139,6 +139,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/agents/:agent_id/sessions",                    get(api::list_sessions))
         .route("/agents/:agent_id/sessions/:session_id",        get(api::get_session))
         .route("/agents/:agent_id/sessions/:session_id",        delete(api::delete_session))
+        .route("/agents/:agent_id/retrievals",                  get(api::list_retrievals))
         .route("/agents/:agent_id/conflicts",                   get(api::list_conflicts))
         .route("/conflicts/:conflict_id/resolve",               post(api::resolve_conflict))
         .route("/memories/search",                              post(api::search_memories_semantic))

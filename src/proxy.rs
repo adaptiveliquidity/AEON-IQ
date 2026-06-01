@@ -112,6 +112,7 @@ pub async fn handle_chat_completions(
         match retrieve_relevant(
             &state,
             &agent_id,
+            &session_id,
             &user_message,
             5,
             effective_threshold,

@@ -1309,6 +1309,7 @@ mod tests {
                 graph_retrieval_enabled: false,
                 dedup_threshold: 0.0,
                 conflict_detection_enabled: false,
+                retrieval_log_query_text: false,
                 amp_config: crate::memory::amp::config::AmpConfig::default(),
                 rmk_config: crate::memory::rmk::config::RmkConfig::default(),
             }),
