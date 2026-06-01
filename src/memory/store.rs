@@ -255,7 +255,7 @@ pub async fn search_memories_filtered(
     WHERE agent_id = "#,
     );
     qb.push_bind(agent_id);
-    qb.push(" AND archived_at IS NULL");
+    qb.push(" AND archived_at IS NULL AND soft_evicted = FALSE");
 
     if let Some(mt) = memory_type {
         qb.push(" AND memory_type = ");

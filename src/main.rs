@@ -117,9 +117,11 @@ async fn main() -> anyhow::Result<()> {
     if config.rmk_config.enabled {
         tokio::spawn(rmk_worker::run_policy_update_job(state.clone()));
         tokio::spawn(rmk_worker::run_co_access_decay_job(state.clone()));
+        tokio::spawn(rmk_worker::run_pressure_sweep_job(state.clone()));
     } else if config.amp_config.enabled {
-        // AMP co-access decay runs even without RMK
+        // AMP co-access decay and pressure sweep run even without RMK.
         tokio::spawn(rmk_worker::run_co_access_decay_job(state.clone()));
+        tokio::spawn(rmk_worker::run_pressure_sweep_job(state.clone()));
     }
 
     // ── Management sub-router (authenticated) ─────────────────────────────────
