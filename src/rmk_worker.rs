@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use sqlx::Row;
 use tracing::{info, warn};
 
 use crate::{

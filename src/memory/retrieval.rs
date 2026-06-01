@@ -120,6 +120,14 @@ pub async fn retrieve_relevant(
             source_turn: r.source_turn,
             importance_score: r.importance_score,
             importance_source: r.importance_source.clone(),
+            // New fields from migration 0019 — not included in MemorySearchRow;
+            // defaults are safe here since these fields don't affect injection content.
+            status: "active".to_string(),
+            sensitivity: "unknown".to_string(),
+            valid_from: None,
+            valid_to: None,
+            suppression_reason: None,
+            status_updated_at: None,
         })
         .collect();
 

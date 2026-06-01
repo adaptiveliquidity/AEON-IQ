@@ -43,6 +43,11 @@ pub struct MemoryDto {
     pub source_turn: Option<i32>,
     pub importance_score: f32,
     pub importance_source: String,
+    pub status: String,
+    pub sensitivity: String,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
+    pub suppression_reason: Option<String>,
 }
 
 impl From<Memory> for MemoryDto {
@@ -59,6 +64,11 @@ impl From<Memory> for MemoryDto {
             source_turn: m.source_turn,
             importance_score: m.importance_score,
             importance_source: m.importance_source,
+            status: if m.status.is_empty() { "active".to_string() } else { m.status },
+            sensitivity: if m.sensitivity.is_empty() { "unknown".to_string() } else { m.sensitivity },
+            valid_from: m.valid_from.map(|t| t.to_rfc3339()),
+            valid_to: m.valid_to.map(|t| t.to_rfc3339()),
+            suppression_reason: m.suppression_reason,
         }
     }
 }

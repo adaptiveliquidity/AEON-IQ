@@ -255,7 +255,7 @@ pub async fn search_memories_filtered(
     WHERE agent_id = "#,
     );
     qb.push_bind(agent_id);
-    qb.push(" AND archived_at IS NULL AND soft_evicted = FALSE");
+    qb.push(" AND archived_at IS NULL AND soft_evicted = FALSE AND status = 'active'");
 
     if let Some(mt) = memory_type {
         qb.push(" AND memory_type = ");
@@ -336,7 +336,8 @@ pub async fn list_memories_for_agent(
     let rows = sqlx::query_as::<_, Memory>(
         r#"
         SELECT id, agent_id, session_id, content, memory_type, confidence, provenance,
-               created_at, updated_at, source_turn, importance_score, importance_source
+               created_at, updated_at, source_turn, importance_score, importance_source,
+               status, sensitivity, valid_from, valid_to, suppression_reason, status_updated_at
         FROM memories
         WHERE agent_id = $1
           AND archived_at IS NULL
@@ -693,7 +694,7 @@ pub async fn get_memories_for_entities(
            WHERE m.agent_id = "#,
     );
     qb.push_bind(agent_id);
-    qb.push(" AND m.archived_at IS NULL AND LOWER(e.name) IN (");
+    qb.push(" AND m.archived_at IS NULL AND m.soft_evicted = FALSE AND m.status = 'active' AND LOWER(e.name) IN (");
     let mut sep = qb.separated(", ");
     for n in &lower_names {
         sep.push_bind(n);
