@@ -1150,6 +1150,8 @@ mod tests {
                 importance_boost_factor,
                 importance_refresh_boost: 0.05,
                 management_api_key: None,
+                allow_unauth_management: true,
+                max_body_bytes: 10 * 1024 * 1024,
                 archival_interval_hours: 0,
                 archival_min_age_days: 7,
                 archival_min_memories: 10,

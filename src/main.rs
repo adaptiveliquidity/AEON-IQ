@@ -19,6 +19,7 @@ use axum::{
     routing::{delete, get, patch, post},
     Router,
 };
+use axum::extract::DefaultBodyLimit;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -50,11 +51,24 @@ async fn main() -> anyhow::Result<()> {
     let config = Arc::new(Config::from_env()?);
     tracing::info!("MemoryOS Kernel starting on port {}", config.port);
 
+    // Refuse to start if the management API would be unauthenticated without
+    // an explicit operator acknowledgement.  This prevents accidental exposure
+    // of /api/v1/* routes in production when the env var is simply forgotten.
     if config.management_api_key.is_none() {
-        tracing::warn!(
-            "MANAGEMENT_API_KEY is not set — management endpoints are unauthenticated. \
-             Set this env var before exposing the service publicly."
-        );
+        if config.allow_unauth_management {
+            tracing::warn!(
+                "MANAGEMENT_API_KEY is not set and ALLOW_UNAUTH_MANAGEMENT=true — \
+                 management endpoints are unauthenticated. Do not expose this service \
+                 publicly without a management key."
+            );
+        } else {
+            anyhow::bail!(
+                "MANAGEMENT_API_KEY is not set. Either:\n  \
+                 • Set MANAGEMENT_API_KEY=<secret> to require authentication, or\n  \
+                 • Set ALLOW_UNAUTH_MANAGEMENT=true to explicitly allow unauthenticated \
+                 access (development only)."
+            );
+        }
     }
 
     let provider = providers::Provider::from_str(&config.upstream_provider);
@@ -147,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
             state.clone(),
             metrics::track_request,
         ))
+        .layer(DefaultBodyLimit::max(config.max_body_bytes))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
