@@ -75,15 +75,17 @@ Each compaction run creates an **archival batch** (`archival_batches` table) tha
 
 `search_memories_filtered` uses a two-CTE SQL pattern:
 - `base` — cosine distance + `days_stale` (days since `last_accessed_at`, or `created_at` if never accessed)
-- `ranked` — three-factor adjusted distance:
+- `ranked` — three-factor adjusted distance (exponential decay, migration 0019+):
 
 ```
 adjusted_dist = cosine_dist
-    × (1 + MEMORY_DECAY_RATE × days_stale)
+    × exp(MEMORY_DECAY_RATE × days_stale)
     × (1 + IMPORTANCE_BOOST_FACTOR × (1 − importance_score))
 ```
 
-When `MEMORY_DECAY_RATE=0.0` and `IMPORTANCE_BOOST_FACTOR=0.0` (defaults) the formula collapses to pure cosine similarity.
+When `MEMORY_DECAY_RATE=0.0`, `exp(0) = 1.0`, and `IMPORTANCE_BOOST_FACTOR=0.0` (defaults) the formula collapses to pure cosine similarity.  The exponential form gives a smoother, monotonic staleness penalty vs the older linear formula.
+
+The retrieval query also filters `AND archived_at IS NULL AND soft_evicted = FALSE AND status = 'active'` so quarantined, suppressed, and soft-evicted memories are invisible to retrieval.
 
 ### Importance scoring
 
@@ -120,7 +122,7 @@ The extraction prompt (`EXTRACTION_SYSTEM_PROMPT` in `src/memory/extraction.rs`)
 
 ### Database
 
-Migrations run automatically at startup via `sqlx::migrate!("./migrations")`. The kernel uses `sqlx::query` (non-macro form) throughout to avoid compile-time DB dependency — never use `sqlx::query!` macros.
+Migrations run automatically at startup via `sqlx::migrate!("./migrations")`. The kernel uses `sqlx::query` (non-macro form) throughout to avoid compile-time DB dependency — never use `sqlx::query!` macros.  Current migration range: 0001–0021.
 
 `QueryBuilder` is used for dynamic filter composition (filters on `memory_type`, `session_id`, etc.). The vector embedding is always bound exactly once inside a CTE to avoid double-binding.
 
@@ -157,6 +159,7 @@ Migrations run automatically at startup via `sqlx::migrate!("./migrations")`. Th
 | `CONFLICT_DETECTION_ENABLED` | `false` | Enable async LLM-based contradiction detection on each L2 insert |
 | `AMP_ENABLED` | `false` | Enable Adaptive Memory Pressure (co-access graph bonuses, pressure scoring) |
 | `RMK_ENABLED` | `false` | Enable Reflexive Memory Kernel (learned policy θ; implies AMP co-access recording) |
+| `RETRIEVAL_LOG_QUERY_TEXT` | `false` | When true, store raw query text in `memory_retrieval_logs`; default stores only SHA-256 hash |
 
 To switch embedding model to bge-small (384 dims): change `EMBEDDING_MODEL`, `EMBEDDING_DIMENSION=384`, and update `vector(1536)` → `vector(384)` in `migrations/0001_initial.sql`.
 
@@ -200,6 +203,11 @@ AppState {
 | GET | `/api/v1/agents/:id/export` | Export all live memories as NDJSON (no embeddings) |
 | POST | `/api/v1/agents/:id/import` | Import NDJSON; re-embeds each memory, runs dedup check |
 | GET | `/api/v1/stats` | Agent + memory counts |
+| POST | `/api/v1/feedback` | Record retrieval-quality feedback; updates `utility_ema` |
+| GET | `/api/v1/agents/:id/retrievals` | Paginated retrieval log (session_id filter available) |
+| GET | `/api/v1/memories/:id/versions` | Full version history for a memory |
+| PATCH | `/api/v1/memories/:id/status` | Set status (active\|candidate\|quarantined\|suppressed); creates version snapshot |
+| PATCH | `/api/v1/memories/:id/sensitivity` | Set sensitivity (unknown\|normal\|private\|sensitive\|secret) |
 
 ### Observability
 
@@ -236,7 +244,9 @@ Prometheus metrics at `GET /metrics` (text format 0.0.4). Key counters/histogram
 
 **`co_access_edges` table** (migration 0015): undirected, normalised to `(min_uuid, max_uuid)` order; `weight` accumulates on conflict, capped at `max_edge_weight`. A nightly decay pass (via `rmk_worker::run_co_access_decay_job`) multiplies all weights by `(1 − decay_per_day)` and prunes below `min_edge_weight`.
 
-**Retrieval wiring** (`src/memory/retrieval.rs`): when AMP or RMK is enabled and the result set is non-empty, a `RetrievalAugmenter` is instantiated from `AppState` config. It calls `get_neighbor_weight_sum` for each candidate (5 indexed DB lookups), subtracts the scaled bonus from the cosine distance, and re-sorts before building `Memory` structs.
+**Retrieval wiring** (`src/memory/retrieval.rs`): when AMP or RMK is enabled and the result set is non-empty, a `RetrievalAugmenter` is instantiated using per-request config clones (so global state is never mutated). When an RMK policy exists for the agent, `RmkAdapter::apply()` overrides all 6 θ dimensions before constructing the augmenter. `get_neighbor_weight_sums()` (batch, single query via UNION ALL) is called for all candidates simultaneously instead of N individual round-trips.
+
+**Utility EMA wiring**: after every successful retrieval, `update_utility_emas()` runs in the same tokio::spawn as `bump_access_counts`, doing a single SQL UPDATE with `WHERE id = ANY($ids)`.  Feedback=1.0 ("this memory was retrieved and is therefore useful").
 
 ### Reflexive Memory Kernel (RMK)
 
@@ -266,8 +276,41 @@ Prometheus metrics at `GET /metrics` (text format 0.0.4). Key counters/histogram
 **Background worker** (`src/rmk_worker.rs`, spawned from `main.rs`):
 - `run_policy_update_job` — sleeps for `update_cooldown_secs` (default 3600 s); for each agent with ≥ `min_episodes_before_update` (default 20) episodes, applies `MetaLearner::suggest_explore()` and persists the (possibly perturbed) policy
 - `run_co_access_decay_job` — runs once per day; calls `CoAccessGraph::decay_all()` to apply weight decay and prune stale edges
+- `run_pressure_sweep_job` — runs every 5 minutes; for each agent: counts active memories, drives a fresh `PIController`, computes pressure for each memory via `PressureManager::compute_pressure()`, batch-updates the `pressure` column, soft-evicts memories above `threshold_high`, and restores those below `threshold_low`
 
-Both workers start when `RMK_ENABLED=true`; `run_co_access_decay_job` also starts when `AMP_ENABLED=true` without RMK.
+`run_policy_update_job` and `run_pressure_sweep_job` start when `RMK_ENABLED=true`; `run_co_access_decay_job` and `run_pressure_sweep_job` also start when `AMP_ENABLED=true` without RMK.
+
+**Episode metrics** (proxy.rs): `token_savings` is computed from `injected_chars / (prompt_chars + injected_chars)`; `eviction_cost` queries the real fraction of soft-evicted memories for the agent.  `task_success` remains 1.0 (proxy cannot observe task outcome — real signal should come from the `/api/v1/feedback` endpoint).
+
+### Memory status, sensitivity, and validity (migration 0019)
+
+Every memory row has:
+- `status` (TEXT, default `'active'`): `active` | `candidate` | `quarantined` | `suppressed`
+- `sensitivity` (TEXT, default `'unknown'`): `unknown` | `normal` | `private` | `sensitive` | `secret`
+- `valid_from` / `valid_to` (TIMESTAMPTZ, nullable): time-bounded validity window
+- `suppression_reason` (TEXT, nullable): free-text reason when status = 'suppressed'
+- `status_updated_at` (TIMESTAMPTZ): last status/sensitivity change time
+
+Retrieval queries filter `AND status = 'active'` alongside the existing `AND archived_at IS NULL AND soft_evicted = FALSE`.  The partial index `idx_memories_active ON memories(agent_id, created_at DESC) WHERE archived_at IS NULL AND status = 'active'` serves the hot path.
+
+### Memory version history (migration 0020)
+
+`memory_versions` stores complete snapshots (not diffs) of every memory change:
+- Every new memory insert creates version 1 inside a transaction in `store_memory_with_tier()`.
+- Every `update_memory_content()` call creates the next version with `change_type='patch'`.
+- `PATCH /api/v1/memories/:id/status` creates a version with `change_type='status_change'`.
+- Migration 0020 backfills version 1 for all existing memories.
+
+### Retrieval audit log (migration 0021)
+
+`memory_retrieval_logs` records every `retrieve_relevant()` call:
+- `query_hash`: SHA-256 of the query text (always stored, privacy-safe)
+- `query_text`: raw query text (only when `RETRIEVAL_LOG_QUERY_TEXT=true`)
+- `candidate_memory_ids` / `injected_memory_ids` / `suppressed_memory_ids`: UUID arrays
+- `scores`: JSONB with per-memory `{cosine_dist, importance_score, confidence}`
+- `latency_ms`: retrieval wall-clock time
+
+The log insert is fire-and-forget (tokio::spawn); failures log a warning and the proxy continues normally.
 
 ### CI/CD (Phase 3)
 
