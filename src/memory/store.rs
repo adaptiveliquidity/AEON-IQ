@@ -159,6 +159,63 @@ pub async fn store_memory(
     Ok(id)
 }
 
+/// Insert a version snapshot for a memory.
+///
+/// `change_type` should be one of: "initial", "patch", "status_change".
+/// Called inside transactions in store_memory_with_tier and update_memory_content.
+async fn create_memory_version(
+    pool: &sqlx::PgPool,
+    memory_id: Uuid,
+    agent_id: &str,
+    content: &str,
+    memory_type: &str,
+    confidence: f32,
+    provenance: &str,
+    importance_score: f32,
+    importance_source: &str,
+    status: &str,
+    sensitivity: &str,
+    source_turn: Option<i32>,
+    change_type: &str,
+    change_reason: Option<&str>,
+) -> Result<()> {
+    // Compute next version number atomically.
+    let next_ver: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(version_number), 0) + 1
+         FROM memory_versions WHERE memory_id = $1",
+    )
+    .bind(memory_id)
+    .fetch_one(pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO memory_versions
+            (memory_id, agent_id, version_number, content, memory_type, confidence,
+             provenance, importance_score, importance_source, status, sensitivity,
+             source_turn, change_type, change_reason, changed_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'system')
+        "#,
+    )
+    .bind(memory_id)
+    .bind(agent_id)
+    .bind(next_ver as i32)
+    .bind(content)
+    .bind(memory_type)
+    .bind(confidence)
+    .bind(provenance)
+    .bind(importance_score)
+    .bind(importance_source)
+    .bind(status)
+    .bind(sensitivity)
+    .bind(source_turn)
+    .bind(change_type)
+    .bind(change_reason)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn store_memory_with_tier(
     state: &AppState,
@@ -176,6 +233,11 @@ pub async fn store_memory_with_tier(
     archival_batch_id: Option<Uuid>,
 ) -> Result<Uuid> {
     let vec = Vector::from(embedding);
+
+    // Wrap insert + version creation in a transaction so version 1 is always
+    // consistent with the memory row.
+    let mut tx = state.db.begin().await?;
+
     let row: (Uuid,) = sqlx::query_as(
         r#"
         INSERT INTO memories
@@ -198,9 +260,36 @@ pub async fn store_memory_with_tier(
     .bind(importance_score)
     .bind(importance_source)
     .bind(archival_batch_id)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await?;
-    Ok(row.0)
+
+    let memory_id = row.0;
+
+    // Version 1: initial snapshot.
+    sqlx::query(
+        r#"
+        INSERT INTO memory_versions
+            (memory_id, agent_id, version_number, content, memory_type, confidence,
+             provenance, importance_score, importance_source, status, sensitivity,
+             source_turn, change_type, change_reason, changed_by)
+        VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, 'active', 'unknown',
+                $9, 'initial', NULL, 'system')
+        "#,
+    )
+    .bind(memory_id)
+    .bind(agent_id)
+    .bind(content)
+    .bind(memory_type)
+    .bind(confidence)
+    .bind(provenance)
+    .bind(importance_score)
+    .bind(importance_source)
+    .bind(source_turn)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(memory_id)
 }
 
 /// Basic cosine-similarity search — used internally by the proxy.
@@ -400,7 +489,7 @@ pub async fn delete_memory(state: &AppState, id: Uuid) -> Result<bool> {
 }
 
 /// Update a memory's content and re-embed it.  Returns false if the memory
-/// does not exist or is tombstoned.
+/// does not exist or is tombstoned.  Creates a new version snapshot.
 pub async fn update_memory_content(
     state: &AppState,
     id: Uuid,
@@ -408,6 +497,8 @@ pub async fn update_memory_content(
     embedding: Vec<f32>,
 ) -> Result<bool> {
     let vec = Vector::from(embedding);
+    let mut tx = state.db.begin().await?;
+
     let r = sqlx::query(
         "UPDATE memories SET content = $1, embedding = $2, updated_at = NOW()
          WHERE id = $3 AND archived_at IS NULL",
@@ -415,9 +506,48 @@ pub async fn update_memory_content(
     .bind(content)
     .bind(vec)
     .bind(id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
-    Ok(r.rows_affected() > 0)
+
+    if r.rows_affected() == 0 {
+        return Ok(false);
+    }
+
+    // Fetch current meta to snapshot in the version row.
+    let meta: Option<(String, String, f32, String, f32, String, String, String, Option<i32>)> =
+        sqlx::query_as(
+            "SELECT agent_id, memory_type, confidence, provenance,
+                    importance_score, importance_source, status, sensitivity, source_turn
+             FROM memories WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+    if let Some((agent_id, memory_type, confidence, provenance, importance_score,
+                 importance_source, status, sensitivity, source_turn)) = meta
+    {
+        create_memory_version(
+            &state.db,
+            id,
+            &agent_id,
+            content,
+            &memory_type,
+            confidence,
+            &provenance,
+            importance_score,
+            &importance_source,
+            &status,
+            &sensitivity,
+            source_turn,
+            "patch",
+            None,
+        )
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(true)
 }
 
 pub async fn count_memories(state: &AppState) -> Result<i64> {

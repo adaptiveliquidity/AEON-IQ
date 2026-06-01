@@ -982,6 +982,83 @@ pub async fn import_memories(
     })))
 }
 
+// ── Memory versions ───────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct MemoryVersionDto {
+    pub id: String,
+    pub memory_id: String,
+    pub version_number: i32,
+    pub content: String,
+    pub memory_type: String,
+    pub confidence: f32,
+    pub provenance: String,
+    pub importance_score: f32,
+    pub importance_source: String,
+    pub status: String,
+    pub sensitivity: String,
+    pub source_turn: Option<i32>,
+    pub change_type: String,
+    pub change_reason: Option<String>,
+    pub changed_by: String,
+    pub created_at: String,
+}
+
+/// GET /api/v1/memories/:id/versions
+///
+/// Returns the full version history for a memory, newest first.
+pub async fn list_memory_versions(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let rows = sqlx::query(
+        r#"
+        SELECT id, memory_id, version_number, content, memory_type, confidence,
+               provenance, importance_score, importance_source, status, sensitivity,
+               source_turn, change_type, change_reason, changed_by, created_at
+        FROM memory_versions
+        WHERE memory_id = $1
+        ORDER BY version_number DESC
+        "#,
+    )
+    .bind(uuid)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    use sqlx::Row;
+    let versions: Vec<MemoryVersionDto> = rows
+        .into_iter()
+        .map(|r| MemoryVersionDto {
+            id: r.get::<uuid::Uuid, _>("id").to_string(),
+            memory_id: r.get::<uuid::Uuid, _>("memory_id").to_string(),
+            version_number: r.get("version_number"),
+            content: r.get("content"),
+            memory_type: r.get("memory_type"),
+            confidence: r.get("confidence"),
+            provenance: r.get("provenance"),
+            importance_score: r.get("importance_score"),
+            importance_source: r.get("importance_source"),
+            status: r.get("status"),
+            sensitivity: r.get("sensitivity"),
+            source_turn: r.get("source_turn"),
+            change_type: r.get("change_type"),
+            change_reason: r.get("change_reason"),
+            changed_by: r.get("changed_by"),
+            created_at: r.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
+        })
+        .collect();
+
+    let total = versions.len();
+    Ok(Json(serde_json::json!({
+        "memory_id": id,
+        "versions": versions,
+        "total": total
+    })))
+}
+
 // ── Retrieval feedback ─────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]

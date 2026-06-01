@@ -145,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/memories/:id",                                 patch(api::patch_memory))
         .route("/memories/:id",                                 delete(api::delete_memory))
         .route("/memories/:id/restore",                         post(api::restore_memory))
+        .route("/memories/:id/versions",                        get(api::list_memory_versions))
         .route("/archival/batches/:batch_id/restore",           post(api::restore_archival_batch))
         .route("/stats",                                        get(api::get_stats))
         .route("/feedback",                                     post(api::post_feedback))
