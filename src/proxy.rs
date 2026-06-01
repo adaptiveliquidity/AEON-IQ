@@ -10,10 +10,16 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{error, info, warn};
 
+use uuid::Uuid;
+
 use crate::{
     memory::{
         extraction::extract_and_store,
         retrieval::{build_injection, retrieve_relevant},
+        rmk::{
+            reward::{EpisodeMetrics, RewardModel},
+            store as rmk_store,
+        },
         store,
     },
     models::{ChatRequest, Message},
@@ -82,19 +88,32 @@ pub async fn handle_chat_completions(
     let original_messages = chat_req.messages.clone();
     let turn_number = original_messages.len() as i32;
 
+    // When RMK is enabled, override the static retrieval threshold with the
+    // agent's current learned policy and capture the policy ID for episode logging.
+    let (effective_threshold, rmk_policy_id): (f64, Option<Uuid>) =
+        if state.config.rmk_config.enabled {
+            match rmk_store::get_latest_policy(&state.db, &agent_id).await {
+                Ok(Some((pid, policy))) => (policy.retrieval_threshold, Some(pid)),
+                _ => (state.config.retrieval_threshold, None),
+            }
+        } else {
+            (state.config.retrieval_threshold, None)
+        };
+
+    let mut memories_retrieved: usize = 0;
     if !user_message.is_empty() {
         match retrieve_relevant(
             &state,
             &agent_id,
             &user_message,
             5,
-            state.config.retrieval_threshold,
+            effective_threshold,
         )
         .await
         {
             Ok(memories) => {
-                let mem_count = memories.len();
-                if mem_count > 0 {
+                memories_retrieved = memories.len();
+                if memories_retrieved > 0 {
                     let wm = store::get_working_memory(&state, &agent_id, &session_id)
                         .await
                         .ok()
@@ -102,7 +121,7 @@ pub async fn handle_chat_completions(
                     let injection = build_injection(&memories, wm.as_ref());
 
                     if !injection.is_empty() {
-                        info!(agent_id = %agent_id, count = mem_count, "Injecting memories");
+                        info!(agent_id = %agent_id, count = memories_retrieved, "Injecting memories");
                         chat_req.messages.insert(
                             0,
                             Message {
@@ -112,7 +131,7 @@ pub async fn handle_chat_completions(
                             },
                         );
                         state.metrics.injection_total.with_label_values(&["hit"]).inc();
-                        state.metrics.injected_per_req.observe(mem_count as f64);
+                        state.metrics.injected_per_req.observe(memories_retrieved as f64);
                     } else {
                         state.metrics.injection_total.with_label_values(&["miss"]).inc();
                     }
@@ -158,8 +177,22 @@ pub async fn handle_chat_completions(
     let is_streaming = chat_req.stream.unwrap_or(false);
     let model = chat_req.model.clone();
 
+    // Capture state fields needed for episode logging before state is moved
+    // into a proxy sub-function.
+    let rmk_log = if state.config.rmk_config.enabled {
+        Some((
+            state.db.clone(),
+            state.config.clone(),
+            agent_id.clone(),
+            rmk_policy_id,
+            memories_retrieved,
+        ))
+    } else {
+        None
+    };
+
     // ── 6. Dispatch by provider ───────────────────────────────────────────────
-    match state.provider {
+    let result = match state.provider {
         Provider::Anthropic => {
             proxy_anthropic(
                 state, agent_id, session_id, original_messages,
@@ -185,7 +218,31 @@ pub async fn handle_chat_completions(
                 .await
             }
         }
+    };
+
+    // ── 7. Log RMK episode (background, fire-and-forget) ─────────────────────
+    if let Some((db, cfg, aid, policy_id, mem_count)) = rmk_log {
+        tokio::spawn(async move {
+            const RETRIEVAL_LIMIT: f64 = 5.0;
+            let precision = mem_count as f64 / RETRIEVAL_LIMIT;
+            let token_savings = if mem_count > 0 { 0.5_f64 } else { 0.0_f64 };
+            let metrics = EpisodeMetrics {
+                task_success: 1.0, // optimistic proxy; real signal from user feedback TBD
+                token_savings,
+                retrieval_precision: precision,
+                eviction_cost: 0.0,
+            };
+            let reward = RewardModel::new(cfg.rmk_config.reward_weights.clone())
+                .compute_reward(&metrics);
+            if let Err(e) =
+                rmk_store::insert_episode(&db, &aid, policy_id, &metrics, reward).await
+            {
+                warn!(agent_id = %aid, "RMK episode logging failed: {}", e);
+            }
+        });
     }
+
+    result
 }
 
 /// Transparent pass-through for GET /v1/models.

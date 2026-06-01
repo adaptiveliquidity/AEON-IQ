@@ -57,6 +57,9 @@ bytes   = "1"
 dotenvy = "0.15"
 dashmap  = "6"
 
+# RMK ε-greedy exploration
+rand = "0.8"
+
 [dev-dependencies]
 # No extra crates needed: sqlx's #[sqlx::test] is enabled by the `migrate`
 # feature already declared in [dependencies], and tokio is already full-featured.

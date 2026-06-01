@@ -99,6 +99,23 @@ pub async fn retrieve_relevant(
         tokio::spawn(store::bump_access_counts(state.clone(), ids));
     }
 
+    // Record pairwise co-access edges when AMP or RMK is active.
+    if (state.config.amp_config.enabled || state.config.rmk_config.enabled) && memories.len() > 1 {
+        let ids: Vec<uuid::Uuid> = memories.iter().map(|m| m.id).collect();
+        let db = state.db.clone();
+        let params = state.config.amp_config.co_access_params.clone();
+        tokio::spawn(async move {
+            let graph = crate::memory::amp::co_access::CoAccessGraph::new(db, params);
+            for i in 0..ids.len() {
+                for j in (i + 1)..ids.len() {
+                    if let Err(e) = graph.record_co_access(ids[i], ids[j]).await {
+                        tracing::warn!("co-access record failed: {}", e);
+                    }
+                }
+            }
+        });
+    }
+
     Ok(memories)
 }
 

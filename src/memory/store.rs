@@ -1159,6 +1159,8 @@ mod tests {
                 graph_retrieval_enabled: false,
                 dedup_threshold: 0.0,
                 conflict_detection_enabled: false,
+                amp_config: crate::memory::amp::config::AmpConfig::default(),
+                rmk_config: crate::memory::rmk::config::RmkConfig::default(),
             }),
             db: pool,
             http_client: reqwest::Client::new(),
