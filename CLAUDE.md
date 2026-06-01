@@ -71,6 +71,8 @@ Archival job (`src/archival.rs`) runs on `ARCHIVAL_INTERVAL_HOURS` schedule: com
 
 Each compaction run creates an **archival batch** (`archival_batches` table) that links the tombstoned L2 sources and the new L3 facts via `memories.archival_batch_id`. This enables atomic batch-level restore: `POST /api/v1/archival/batches/:batch_id/restore` un-tombstones L2 memories and re-tombstones the L3 facts that replaced them, then sets `batch.status = 'restored'`. A restored batch cannot be restored again (idempotency guard). If the embedding step fails after the batch record is created, the batch is marked `status = 'failed'` (migration 0010).
 
+**Narrative consolidation** — alongside the 3-5 compressed semantic facts, the archival LLM call also returns a 2-3 sentence cohesive prose summary. When the narrative is non-empty it is stored as a separate L3 memory with `memory_type = 'narrative'`, tagged with the same `archival_batch_id`, and versioned in `memory_versions` (initial snapshot like any other memory). A missing or blank narrative is tolerated: facts still archive normally and `narrative_count = 0` is reported. Narrative L3 rows participate fully in retrieval, restoration, and version history. `POST /api/v1/agents/:id/archival/trigger` returns an extra `narrative_count` field (0 or 1). The `memoryos_narrative_total` Prometheus counter increments per stored narrative. All LLM work for narrative consolidation happens on the background archival path only — the retrieval hot path is unchanged.
+
 ### Decay-weighted retrieval
 
 `search_memories_filtered` uses a two-CTE SQL pattern:
@@ -185,6 +187,8 @@ AppState {
 | GET | `/api/v1/agents` | List all agents |
 | DELETE | `/api/v1/agents/:id` | Delete agent and all its data (cascade) |
 | GET | `/api/v1/agents/:id/memories` | Paginated live memories |
+| GET | `/api/v1/agents/:id/memories/at` | Time-travel snapshot at `timestamp` using latest version per memory at or before that time |
+| GET | `/api/v1/agents/:id/memories/diff` | Temporal diff in `[from,to]`: added, modified, archived, status_changed, retrieval_activity |
 | POST | `/api/v1/agents/:id/memories` | Create memory manually |
 | PATCH | `/api/v1/memories/:id` | Update memory content (re-embeds) |
 | GET | `/api/v1/agents/:id/memories/archived` | Tombstoned memories |
@@ -208,6 +212,18 @@ AppState {
 | GET | `/api/v1/memories/:id/versions` | Full version history for a memory |
 | PATCH | `/api/v1/memories/:id/status` | Set status (active\|candidate\|quarantined\|suppressed); creates version snapshot |
 | PATCH | `/api/v1/memories/:id/sensitivity` | Set sensitivity (unknown\|normal\|private\|sensitive\|secret) |
+
+### Temporal memory endpoints
+
+- `GET /api/v1/agents/:id/memories/at?timestamp=<ISO>&limit=<n>&offset=<n>`
+  - Reconstructs memory state at a point in time from `memory_versions`.
+  - Includes memories created at/before `timestamp`.
+  - Excludes memories archived at/before `timestamp`.
+  - Returns paginated rows and total count.
+- `GET /api/v1/agents/:id/memories/diff?from=<ISO>&to=<ISO>`
+  - Compares latest version as-of `from` vs latest version as-of `to`.
+  - Returns `added`, `modified` (before/after), `archived`, `status_changed`.
+  - Includes retrieval activity summary from `memory_retrieval_logs` in `[from,to]`.
 
 ### Observability
 

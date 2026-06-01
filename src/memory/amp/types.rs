@@ -8,6 +8,7 @@ use uuid::Uuid;
 /// `last_accessed` is renamed from the existing `last_accessed_at` column
 /// (migration 0004).  `access_count` maps to the `INTEGER` column added in
 /// migration 0002; `utility_ema` and `pressure` were added in 0014.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct MemoryPressureState {
     pub memory_id: Uuid,

@@ -1,12 +1,12 @@
 use anyhow::Result;
 use tracing::{error, info, warn};
 
+use super::store;
 use crate::{
     embeddings::embed_texts,
     models::{ExtractionResult, Message},
     AppState,
 };
-use super::store;
 
 /// Role-aware extraction prompt (Issues 3 + 4).
 ///
@@ -140,14 +140,20 @@ async fn run_extraction(
     let start = std::time::Instant::now();
     let resp = state
         .http_client
-        .post(format!("{}/v1/chat/completions", state.config.extractor_base_url))
+        .post(format!(
+            "{}/v1/chat/completions",
+            state.config.extractor_base_url
+        ))
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&payload)
         .send()
         .await?;
 
-    state.metrics.extraction_secs.observe(start.elapsed().as_secs_f64());
+    state
+        .metrics
+        .extraction_secs
+        .observe(start.elapsed().as_secs_f64());
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -169,14 +175,22 @@ async fn run_extraction(
                 err,
                 &raw[..raw.len().min(400)]
             );
-            state.metrics.extraction_total.with_label_values(&["error"]).inc();
+            state
+                .metrics
+                .extraction_total
+                .with_label_values(&["error"])
+                .inc();
             return Ok(());
         }
     };
 
     if extraction.confidence_low {
         info!(agent_id = %agent_id, "Low-confidence extraction — skipping storage");
-        state.metrics.extraction_total.with_label_values(&["low_confidence"]).inc();
+        state
+            .metrics
+            .extraction_total
+            .with_label_values(&["low_confidence"])
+            .inc();
         return Ok(());
     }
 
@@ -186,7 +200,11 @@ async fn run_extraction(
     // a lower confidence cap so they don't dominate future retrievals.
     let mut memory_ids: Vec<uuid::Uuid> = Vec::new();
     if !extraction.facts.is_empty() {
-        let texts: Vec<&str> = extraction.facts.iter().map(|f| f.content.as_str()).collect();
+        let texts: Vec<&str> = extraction
+            .facts
+            .iter()
+            .map(|f| f.content.as_str())
+            .collect();
         let has_agent_tag = assistant_content.contains("<important>");
 
         match embed_texts(state, &texts).await {
@@ -205,7 +223,10 @@ async fn run_extraction(
                         (fact.importance_score.unwrap_or(0.5) as f32, "extractor")
                     };
 
-                    state.metrics.extraction_importance.observe(imp_score as f64);
+                    state
+                        .metrics
+                        .extraction_importance
+                        .observe(imp_score as f64);
                     if imp_score >= 0.9 {
                         state.metrics.high_importance_total.inc();
                     }
@@ -238,7 +259,11 @@ async fn run_extraction(
     let mut entity_ids: Vec<uuid::Uuid> = Vec::new();
     for entity in &extraction.entities {
         match store::upsert_entity(
-            state, agent_id, &entity.name, &entity.entity_type, entity.confidence,
+            state,
+            agent_id,
+            &entity.name,
+            &entity.entity_type,
+            entity.confidence,
         )
         .await
         {
@@ -257,10 +282,8 @@ async fn run_extraction(
     }
 
     for rel in &extraction.relations {
-        if let Err(e) = store::insert_relation(
-            state, agent_id, &rel.subject, &rel.predicate, &rel.object,
-        )
-        .await
+        if let Err(e) =
+            store::insert_relation(state, agent_id, &rel.subject, &rel.predicate, &rel.object).await
         {
             warn!(agent_id = %agent_id, "Failed to store relation: {}", e);
         }
@@ -284,7 +307,11 @@ async fn run_extraction(
         warn!(agent_id = %agent_id, "Failed to update working memory: {}", e);
     }
 
-    state.metrics.extraction_total.with_label_values(&["ok"]).inc();
+    state
+        .metrics
+        .extraction_total
+        .with_label_values(&["ok"])
+        .inc();
 
     info!(
         agent_id = %agent_id,
@@ -305,10 +332,10 @@ async fn run_extraction(
 /// unknown        → capped at 0.60
 fn adjusted_confidence(provenance: &str, raw: f64) -> f32 {
     let cap = match provenance {
-        "user_stated"       => 0.95_f64,
+        "user_stated" => 0.95_f64,
         "assistant_derived" => 0.70,
-        "inferred"          => 0.50,
-        _                   => 0.60,
+        "inferred" => 0.50,
+        _ => 0.60,
     };
     raw.min(cap) as f32
 }
@@ -343,4 +370,3 @@ mod tests {
         assert!((adjusted_confidence("random_label", 0.40) - 0.40).abs() < 1e-6);
     }
 }
-

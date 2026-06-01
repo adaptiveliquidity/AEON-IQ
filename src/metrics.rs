@@ -38,6 +38,9 @@ pub struct Metrics {
     /// Number of memories compacted per archival cycle.
     pub archival_compacted: Histogram,
 
+    /// Number of L3 narrative memories produced by the archival path.
+    pub narrative_total: Counter,
+
     /// Requests rejected by the per-agent rate limiter.
     pub rate_limited_total: Counter,
 
@@ -55,9 +58,9 @@ impl Metrics {
     pub fn new() -> Result<Self, prometheus::Error> {
         let reg = Registry::new();
 
-        let req_buckets  = vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
+        let req_buckets = vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
         let fast_buckets = vec![0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5];
-        let count_buckets= vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 25.0, 50.0];
+        let count_buckets = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 25.0, 50.0];
 
         macro_rules! reg {
             ($m:expr) => {{
@@ -98,7 +101,10 @@ impl Metrics {
         )?);
 
         let extraction_total = reg!(CounterVec::new(
-            Opts::new("memoryos_extraction_total", "MMU background extraction outcomes"),
+            Opts::new(
+                "memoryos_extraction_total",
+                "MMU background extraction outcomes"
+            ),
             &["status"],
         )?);
 
@@ -130,6 +136,11 @@ impl Metrics {
             )
             .buckets(count_buckets),
         )?);
+
+        let narrative_total = reg!(Counter::with_opts(Opts::new(
+            "memoryos_narrative_total",
+            "L3 narrative memories produced by the archival path",
+        ))?);
 
         let rate_limited_total = reg!(Counter::with_opts(Opts::new(
             "memoryos_rate_limited_total",
@@ -167,6 +178,7 @@ impl Metrics {
             vector_search_secs,
             archival_total,
             archival_compacted,
+            narrative_total,
             rate_limited_total,
             extraction_importance,
             high_importance_total,
@@ -189,10 +201,7 @@ impl Metrics {
 pub async fn handle_metrics(State(state): State<crate::AppState>) -> Response<Body> {
     Response::builder()
         .status(StatusCode::OK)
-        .header(
-            "content-type",
-            "text/plain; version=0.0.4; charset=utf-8",
-        )
+        .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
         .body(Body::from(state.metrics.render()))
         .unwrap()
 }
@@ -230,13 +239,13 @@ pub async fn track_request(
 /// cardinality stays bounded regardless of how many unique agent IDs exist.
 fn coarsen_path(path: &str) -> &str {
     match path {
-        "/v1/chat/completions"     => "/v1/chat/completions",
-        "/v1/models"               => "/v1/models",
-        "/api/v1/agents"           => "/api/v1/agents",
-        "/api/v1/stats"            => "/api/v1/stats",
-        "/api/v1/memories/search"  => "/api/v1/memories/search",
-        "/metrics"                 => "/metrics",
-        "/health"                  => "/health",
+        "/v1/chat/completions" => "/v1/chat/completions",
+        "/v1/models" => "/v1/models",
+        "/api/v1/agents" => "/api/v1/agents",
+        "/api/v1/stats" => "/api/v1/stats",
+        "/api/v1/memories/search" => "/api/v1/memories/search",
+        "/metrics" => "/metrics",
+        "/health" => "/health",
         p if p.ends_with("/memories") && p.starts_with("/api/v1/agents/") => {
             "/api/v1/agents/:id/memories"
         }

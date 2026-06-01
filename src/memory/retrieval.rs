@@ -1,13 +1,13 @@
 use anyhow::Result;
 use sha2::{Digest, Sha256};
 
+use super::store;
 use crate::{
     embeddings::embed_text,
     memory::rmk::policy::PolicyParams,
     models::{Memory, MemorySearchRow, WorkingMemory, WorkingMemoryState},
     AppState,
 };
-use super::store;
 
 /// Embed `query`, run a vector similarity search, and return memories whose
 /// cosine distance is below `threshold`.
@@ -34,16 +34,9 @@ pub async fn retrieve_relevant(
     let start = std::time::Instant::now();
 
     let embedding = embed_text(state, query).await?;
-    let raw_rows = store::search_memories_filtered(
-        state,
-        agent_id,
-        &embedding,
-        limit,
-        threshold,
-        None,
-        None,
-    )
-    .await?;
+    let raw_rows =
+        store::search_memories_filtered(state, agent_id, &embedding, limit, threshold, None, None)
+            .await?;
 
     state
         .metrics
@@ -59,53 +52,52 @@ pub async fn retrieve_relevant(
     //
     // When a learned RMK policy is provided, its 5 non-threshold dimensions
     // override the static AMP config structs for this request only.
-    let rows: Vec<MemorySearchRow> =
-        if (state.config.amp_config.enabled || state.config.rmk_config.enabled)
-            && !raw_rows.is_empty()
-        {
-            // Clone per-request copies of the AMP structs so global state is
-            // never mutated; apply learned overrides from the policy if present.
-            let mut pressure_params = state.config.amp_config.pressure_params.clone();
-            let mut controller_params = state.config.amp_config.controller_params.clone();
-            let mut co_access_params = state.config.amp_config.co_access_params.clone();
-            let mut _local_threshold = threshold;
-            if let Some(pol) = policy {
-                crate::memory::rmk::adapter::RmkAdapter::apply(
-                    pol,
-                    &mut pressure_params,
-                    &mut controller_params,
-                    &mut co_access_params,
-                    &mut _local_threshold,
-                );
-            }
-
-            let augmenter = crate::memory::amp::augmenter::RetrievalAugmenter::new(
-                crate::memory::amp::pressure::PressureManager::new(pressure_params),
-                crate::memory::amp::co_access::CoAccessGraph::new(
-                    state.db.clone(),
-                    co_access_params.clone(),
-                ),
-                co_access_params.graph_bonus_weight,
+    let rows: Vec<MemorySearchRow> = if (state.config.amp_config.enabled
+        || state.config.rmk_config.enabled)
+        && !raw_rows.is_empty()
+    {
+        // Clone per-request copies of the AMP structs so global state is
+        // never mutated; apply learned overrides from the policy if present.
+        let mut pressure_params = state.config.amp_config.pressure_params.clone();
+        let mut controller_params = state.config.amp_config.controller_params.clone();
+        let mut co_access_params = state.config.amp_config.co_access_params.clone();
+        let mut _local_threshold = threshold;
+        if let Some(pol) = policy {
+            crate::memory::rmk::adapter::RmkAdapter::apply(
+                pol,
+                &mut pressure_params,
+                &mut controller_params,
+                &mut co_access_params,
+                &mut _local_threshold,
             );
+        }
 
-            let pairs: Vec<(uuid::Uuid, f64)> = raw_rows
-                .iter()
-                .map(|r| (r.id, r.distance.unwrap_or(1.0)))
-                .collect();
-            let ids: Vec<uuid::Uuid> = raw_rows.iter().map(|r| r.id).collect();
-            let augmented = augmenter.augment_scores(ids, &pairs).await;
+        let augmenter = crate::memory::amp::augmenter::RetrievalAugmenter::new(
+            crate::memory::amp::pressure::PressureManager::new(pressure_params),
+            crate::memory::amp::co_access::CoAccessGraph::new(
+                state.db.clone(),
+                co_access_params.clone(),
+            ),
+            co_access_params.graph_bonus_weight,
+        );
 
-            // Zip augmented distances back to rows and re-sort ascending.
-            let mut with_dist: Vec<(MemorySearchRow, f64)> = raw_rows
-                .into_iter()
-                .zip(augmented.into_iter().map(|(_, d)| d))
-                .collect();
-            with_dist
-                .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-            with_dist.into_iter().map(|(r, _)| r).collect()
-        } else {
-            raw_rows
-        };
+        let pairs: Vec<(uuid::Uuid, f64)> = raw_rows
+            .iter()
+            .map(|r| (r.id, r.distance.unwrap_or(1.0)))
+            .collect();
+        let ids: Vec<uuid::Uuid> = raw_rows.iter().map(|r| r.id).collect();
+        let augmented = augmenter.augment_scores(ids, &pairs).await;
+
+        // Zip augmented distances back to rows and re-sort ascending.
+        let mut with_dist: Vec<(MemorySearchRow, f64)> = raw_rows
+            .into_iter()
+            .zip(augmented.into_iter().map(|(_, d)| d))
+            .collect();
+        with_dist.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        with_dist.into_iter().map(|(r, _)| r).collect()
+    } else {
+        raw_rows
+    };
 
     let mut memories: Vec<Memory> = rows
         .iter()
@@ -150,10 +142,7 @@ pub async fn retrieve_relevant(
                 .await
                 .unwrap_or_default();
 
-            let all_entities: Vec<String> = matched
-                .into_iter()
-                .chain(related.into_iter())
-                .collect();
+            let all_entities: Vec<String> = matched.into_iter().chain(related).collect();
 
             let vector_ids: Vec<uuid::Uuid> = memories.iter().map(|m| m.id).collect();
             let graph_mems = store::get_memories_for_entities(
@@ -310,11 +299,11 @@ pub fn build_injection(memories: &[Memory], working_memory: Option<&WorkingMemor
                     .unwrap_or_default();
                 format!(
                     "[FACT-{idx} | type:{typ} | src:{prov} | conf:{conf:.0}%{turn}]\n\"{content}\"",
-                    idx     = i + 1,
-                    typ     = m.memory_type,
-                    prov    = m.provenance,
-                    conf    = m.confidence * 100.0,
-                    turn    = turn,
+                    idx = i + 1,
+                    typ = m.memory_type,
+                    prov = m.provenance,
+                    conf = m.confidence * 100.0,
+                    turn = turn,
                     content = m.content,
                 )
             })
@@ -346,7 +335,10 @@ fn render_structured_state(s: &WorkingMemoryState) -> String {
         parts.push(format!("[SESSION_SUMMARY]\n{}", s.summary.trim()));
     }
     if !s.active_entities.is_empty() {
-        parts.push(format!("[ACTIVE_ENTITIES]\n{}", s.active_entities.join(", ")));
+        parts.push(format!(
+            "[ACTIVE_ENTITIES]\n{}",
+            s.active_entities.join(", ")
+        ));
     }
     if let Some(goal) = &s.current_goal {
         if !goal.trim().is_empty() {

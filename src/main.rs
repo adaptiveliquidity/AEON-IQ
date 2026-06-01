@@ -14,12 +14,12 @@ mod rmk_worker;
 
 use std::sync::Arc;
 
+use axum::extract::DefaultBodyLimit;
 use axum::{
     middleware,
     routing::{delete, get, patch, post},
     Router,
 };
-use axum::extract::DefaultBodyLimit;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -28,11 +28,11 @@ pub use db::DbPool;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub config:       Arc<Config>,
-    pub db:           DbPool,
-    pub http_client:  reqwest::Client,
-    pub metrics:      Arc<metrics::Metrics>,
-    pub provider:     providers::Provider,
+    pub config: Arc<Config>,
+    pub db: DbPool,
+    pub http_client: reqwest::Client,
+    pub metrics: Arc<metrics::Metrics>,
+    pub provider: providers::Provider,
     pub rate_limiter: Arc<rate_limit::RateLimiter>,
 }
 
@@ -77,7 +77,8 @@ async fn main() -> anyhow::Result<()> {
     if config.rate_limit_rpm > 0 {
         tracing::info!(
             "Rate limiting enabled: {} RPM per agent, burst {}",
-            config.rate_limit_rpm, config.rate_limit_burst,
+            config.rate_limit_rpm,
+            config.rate_limit_burst,
         );
     }
 
@@ -102,10 +103,10 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     let state = AppState {
-        config:      config.clone(),
+        config: config.clone(),
         db,
         http_client,
-        metrics:     Arc::new(m),
+        metrics: Arc::new(m),
         provider,
         rate_limiter,
     };
@@ -126,32 +127,61 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Management sub-router (authenticated) ─────────────────────────────────
     let management = Router::new()
-        .route("/agents",                                       get(api::list_agents))
-        .route("/agents/:agent_id",                             delete(api::delete_agent))
-        .route("/agents/:agent_id/memories",                    get(api::list_memories))
-        .route("/agents/:agent_id/memories",                    post(api::create_memory))
-        .route("/agents/:agent_id/memories/bulk",               post(api::bulk_operation))
-        .route("/agents/:agent_id/memories/archived",           get(api::list_archived_memories))
-        .route("/agents/:agent_id/archival/batches",            get(api::list_archival_batches))
-        .route("/agents/:agent_id/archival/trigger",            post(api::trigger_archival))
-        .route("/agents/:agent_id/export",                      get(api::export_memories))
-        .route("/agents/:agent_id/import",                      post(api::import_memories))
-        .route("/agents/:agent_id/sessions",                    get(api::list_sessions))
-        .route("/agents/:agent_id/sessions/:session_id",        get(api::get_session))
-        .route("/agents/:agent_id/sessions/:session_id",        delete(api::delete_session))
-        .route("/agents/:agent_id/retrievals",                  get(api::list_retrievals))
-        .route("/agents/:agent_id/conflicts",                   get(api::list_conflicts))
-        .route("/conflicts/:conflict_id/resolve",               post(api::resolve_conflict))
-        .route("/memories/search",                              post(api::search_memories_semantic))
-        .route("/memories/:id",                                 patch(api::patch_memory))
-        .route("/memories/:id",                                 delete(api::delete_memory))
-        .route("/memories/:id/restore",                         post(api::restore_memory))
-        .route("/memories/:id/versions",                        get(api::list_memory_versions))
-        .route("/memories/:id/status",                          patch(api::patch_memory_status))
-        .route("/memories/:id/sensitivity",                     patch(api::patch_memory_sensitivity))
-        .route("/archival/batches/:batch_id/restore",           post(api::restore_archival_batch))
-        .route("/stats",                                        get(api::get_stats))
-        .route("/feedback",                                     post(api::post_feedback))
+        .route("/agents", get(api::list_agents))
+        .route("/agents/:agent_id", delete(api::delete_agent))
+        .route("/agents/:agent_id/memories", get(api::list_memories))
+        .route("/agents/:agent_id/memories", post(api::create_memory))
+        .route(
+            "/agents/:agent_id/memories/at",
+            get(api::memories_at_timestamp),
+        )
+        .route("/agents/:agent_id/memories/diff", get(api::memories_diff))
+        .route("/agents/:agent_id/memories/bulk", post(api::bulk_operation))
+        .route(
+            "/agents/:agent_id/memories/archived",
+            get(api::list_archived_memories),
+        )
+        .route(
+            "/agents/:agent_id/archival/batches",
+            get(api::list_archival_batches),
+        )
+        .route(
+            "/agents/:agent_id/archival/trigger",
+            post(api::trigger_archival),
+        )
+        .route("/agents/:agent_id/export", get(api::export_memories))
+        .route("/agents/:agent_id/import", post(api::import_memories))
+        .route("/agents/:agent_id/sessions", get(api::list_sessions))
+        .route(
+            "/agents/:agent_id/sessions/:session_id",
+            get(api::get_session),
+        )
+        .route(
+            "/agents/:agent_id/sessions/:session_id",
+            delete(api::delete_session),
+        )
+        .route("/agents/:agent_id/retrievals", get(api::list_retrievals))
+        .route("/agents/:agent_id/conflicts", get(api::list_conflicts))
+        .route(
+            "/conflicts/:conflict_id/resolve",
+            post(api::resolve_conflict),
+        )
+        .route("/memories/search", post(api::search_memories_semantic))
+        .route("/memories/:id", patch(api::patch_memory))
+        .route("/memories/:id", delete(api::delete_memory))
+        .route("/memories/:id/restore", post(api::restore_memory))
+        .route("/memories/:id/versions", get(api::list_memory_versions))
+        .route("/memories/:id/status", patch(api::patch_memory_status))
+        .route(
+            "/memories/:id/sensitivity",
+            patch(api::patch_memory_sensitivity),
+        )
+        .route(
+            "/archival/batches/:batch_id/restore",
+            post(api::restore_archival_batch),
+        )
+        .route("/stats", get(api::get_stats))
+        .route("/feedback", post(api::post_feedback))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::check_management_key,
@@ -160,10 +190,10 @@ async fn main() -> anyhow::Result<()> {
     // ── Root router ───────────────────────────────────────────────────────────
     let app = Router::new()
         .route("/v1/chat/completions", post(proxy::handle_chat_completions))
-        .route("/v1/models",           get(proxy::handle_models))
+        .route("/v1/models", get(proxy::handle_models))
         .nest("/api/v1", management)
         .route("/metrics", get(metrics::handle_metrics))
-        .route("/health",  get(|| async { "OK" }))
+        .route("/health", get(|| async { "OK" }))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             metrics::track_request,

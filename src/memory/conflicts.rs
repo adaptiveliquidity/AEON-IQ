@@ -77,7 +77,10 @@ async fn run_detection(
     let api_key = state.config.openai_api_key.as_deref().unwrap_or("no-key");
     let resp = state
         .http_client
-        .post(format!("{}/v1/chat/completions", state.config.extractor_base_url))
+        .post(format!(
+            "{}/v1/chat/completions",
+            state.config.extractor_base_url
+        ))
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&serde_json::json!({
@@ -107,7 +110,9 @@ async fn run_detection(
             let reason = item["reason"].as_str().unwrap_or("contradicts new fact");
             if let Ok(existing_id) = Uuid::parse_str(id_str) {
                 if candidates.iter().any(|(id, _)| *id == existing_id) {
-                    match store::store_conflict(state, agent_id, existing_id, new_memory_id, reason).await {
+                    match store::store_conflict(state, agent_id, existing_id, new_memory_id, reason)
+                        .await
+                    {
                         Ok(cid) => debug!(agent_id, %cid, "stored conflict"),
                         Err(e) => warn!(agent_id, "failed to store conflict: {}", e),
                     }

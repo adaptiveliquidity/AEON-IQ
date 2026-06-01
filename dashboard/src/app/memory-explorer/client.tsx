@@ -101,6 +101,7 @@ const TYPE_COLORS: Record<string, string> = {
   episodic:   "bg-blue-500/20 text-blue-300 border-blue-500/30",
   semantic:   "bg-green-500/20 text-green-300 border-green-500/30",
   procedural: "bg-yellow-500/20 text-yellow-300 border-yellow-500/30",
+  narrative:  "bg-purple-500/20 text-purple-300 border-purple-500/30",
 };
 
 const PROV_COLORS: Record<string, string> = {

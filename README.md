@@ -91,9 +91,9 @@ Every `POST /v1/chat/completions` passes through five stages:
 |------|---------|-------------|
 | **L1** | `working_memory` | Per-session rolling summary; updated every turn |
 | **L2** | `memories` (tier='L2') | Individual extracted facts; default tier |
-| **L3** | `memories` (tier='L3') | Compressed archival facts; created by the LTM job |
+| **L3** | `memories` (tier='L3') | Compressed archival facts and narrative summaries; created by the LTM job |
 
-The **LTM archival job** automatically compacts stale L2 facts into concise L3 summaries on a configurable schedule. Every compaction run is versioned and reversible — you can restore any batch with a single API call.
+The **LTM archival job** automatically compacts stale L2 facts into concise L3 summaries on a configurable schedule. Each compaction also produces a 2-3 sentence cohesive **narrative memory** (`memory_type = 'narrative'`) that captures the throughline of the archived material. Every compaction run is versioned and reversible — you can restore any batch with a single API call, which automatically un-tombstones the source L2 memories and re-tombstones both the compressed facts and their narrative.
 
 ### Retrieval formula
 
@@ -304,6 +304,8 @@ Authenticate with `X-Management-Key: <key>` or `Authorization: Bearer <key>` (se
 | GET | `/api/v1/agents` | List all agents |
 | DELETE | `/api/v1/agents/:id` | Delete agent and all its data (cascade) |
 | GET | `/api/v1/agents/:id/memories` | Paginated live memories |
+| GET | `/api/v1/agents/:id/memories/at` | Time-travel snapshot at `timestamp` using latest memory versions as-of that time |
+| GET | `/api/v1/agents/:id/memories/diff` | Temporal diff between `from` and `to`: added/modified/archived/status_changed/retrieval_activity |
 | POST | `/api/v1/agents/:id/memories` | Create memory manually |
 | POST | `/api/v1/agents/:id/memories/bulk` | Bulk archive or delete memories by filter |
 | GET | `/api/v1/agents/:id/memories/archived` | Tombstoned memories |
@@ -340,6 +342,20 @@ curl -X POST \
   http://localhost:8080/api/v1/memories/search
 ```
 
+### Example: time-travel snapshot
+
+```bash
+curl -H "X-Management-Key: $MANAGEMENT_API_KEY" \
+  "http://localhost:8080/api/v1/agents/my-bot/memories/at?timestamp=2026-06-01T00:00:00Z&limit=20&offset=0"
+```
+
+### Example: memory diff
+
+```bash
+curl -H "X-Management-Key: $MANAGEMENT_API_KEY" \
+  "http://localhost:8080/api/v1/agents/my-bot/memories/diff?from=2026-05-01T00:00:00Z&to=2026-06-02T00:00:00Z"
+```
+
 ---
 
 ## Dashboard
@@ -351,6 +367,7 @@ Open **http://localhost:3000** after `docker compose up`.
   - **Archived** tab — view tombstoned memories; restore individuals with one click
   - **Batch History** — every L2→L3 compaction run with full restore support
 - **Knowledge Graph** — entity/relation graph extracted from conversations
+- **Cognition** — retrieval timeline, temporal snapshots, memory diffs, and recall debugging; a full memory lifecycle timeline remains future work
 - **Metrics** — Prometheus-backed usage charts (requests, extraction rate, retrieval hits)
 
 Default credentials: `admin@memoryos.dev` / `changeme` (set `DASHBOARD_ADMIN_EMAIL` and `DASHBOARD_ADMIN_PASSWORD`).

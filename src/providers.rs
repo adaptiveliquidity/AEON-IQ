@@ -16,17 +16,17 @@ impl Provider {
     pub fn from_str(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "anthropic" | "claude" => Self::Anthropic,
-            "gemini" | "google"   => Self::Gemini,
-            _                     => Self::OpenAI,
+            "gemini" | "google" => Self::Gemini,
+            _ => Self::OpenAI,
         }
     }
 
     /// Full POST URL for chat completions on this provider.
     pub fn completions_url(&self, base_url: &str) -> String {
         match self {
-            Self::OpenAI   => format!("{}/v1/chat/completions", base_url),
+            Self::OpenAI => format!("{}/v1/chat/completions", base_url),
             // Gemini exposes an OpenAI-compatible surface under /v1beta/openai/
-            Self::Gemini   => format!("{}/v1beta/openai/chat/completions", base_url),
+            Self::Gemini => format!("{}/v1beta/openai/chat/completions", base_url),
             Self::Anthropic => format!("{}/v1/messages", base_url),
         }
     }
@@ -114,7 +114,9 @@ impl Provider {
 
 fn build_anthropic_body(req: &ChatRequest) -> Value {
     // System messages become the top-level `system` field.
-    let system: String = req.messages.iter()
+    let system: String = req
+        .messages
+        .iter()
         .filter(|m| m.role == "system")
         .map(|m| m.content_text())
         .collect::<Vec<_>>()
@@ -124,7 +126,11 @@ fn build_anthropic_body(req: &ChatRequest) -> Value {
     // Merge consecutive same-role messages to satisfy Anthropic's constraint.
     let mut messages: Vec<Value> = Vec::new();
     for msg in req.messages.iter().filter(|m| m.role != "system") {
-        let role = if msg.role == "assistant" { "assistant" } else { "user" };
+        let role = if msg.role == "assistant" {
+            "assistant"
+        } else {
+            "user"
+        };
         let text = msg.content_text();
 
         if let Some(last) = messages.last_mut() {
@@ -214,10 +220,10 @@ fn parse_anthropic_json(data: &[u8]) -> String {
     serde_json::from_slice::<Value>(data)
         .ok()
         .and_then(|v| {
-            v["content"].as_array()?
+            v["content"]
+                .as_array()?
                 .iter()
-                .find(|b| b["type"].as_str() == Some("text"))?
-                ["text"]
+                .find(|b| b["type"].as_str() == Some("text"))?["text"]
                 .as_str()
                 .map(|s| s.to_string())
         })
@@ -289,7 +295,8 @@ mod tests {
 
     #[test]
     fn anthropic_json_skips_non_text_blocks() {
-        let json = br#"{"content":[{"type":"tool_use","id":"x"},{"type":"text","text":"After tool"}]}"#;
+        let json =
+            br#"{"content":[{"type":"tool_use","id":"x"},{"type":"text","text":"After tool"}]}"#;
         assert_eq!(parse_anthropic_json(json), "After tool");
     }
 
@@ -301,8 +308,16 @@ mod tests {
         let req = ChatRequest {
             model: "claude-3".into(),
             messages: vec![
-                Message { role: "system".into(), content: "You are helpful.".into(), name: None },
-                Message { role: "user".into(),   content: "Hello".into(),            name: None },
+                Message {
+                    role: "system".into(),
+                    content: "You are helpful.".into(),
+                    name: None,
+                },
+                Message {
+                    role: "user".into(),
+                    content: "Hello".into(),
+                    name: None,
+                },
             ],
             stream: None,
             temperature: None,
@@ -322,9 +337,21 @@ mod tests {
         let req = ChatRequest {
             model: "claude-3".into(),
             messages: vec![
-                Message { role: "user".into(), content: "First".into(), name: None },
-                Message { role: "user".into(), content: "Second".into(), name: None },
-                Message { role: "assistant".into(), content: "Reply".into(), name: None },
+                Message {
+                    role: "user".into(),
+                    content: "First".into(),
+                    name: None,
+                },
+                Message {
+                    role: "user".into(),
+                    content: "Second".into(),
+                    name: None,
+                },
+                Message {
+                    role: "assistant".into(),
+                    content: "Reply".into(),
+                    name: None,
+                },
             ],
             stream: None,
             temperature: None,

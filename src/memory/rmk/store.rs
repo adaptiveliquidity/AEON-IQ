@@ -95,16 +95,18 @@ pub async fn get_recent_episode_rewards(
     .bind(limit)
     .fetch_all(pool)
     .await?;
-    Ok(rows.into_iter().map(|r| r.get::<f64, _>("reward")).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| r.get::<f64, _>("reward"))
+        .collect())
 }
 
 /// Count all episodes recorded for an agent.
 pub async fn count_episodes(pool: &PgPool, agent_id: &str) -> Result<i64> {
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM rmk_episodes WHERE agent_id = $1")
-            .bind(agent_id)
-            .fetch_one(pool)
-            .await?;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM rmk_episodes WHERE agent_id = $1")
+        .bind(agent_id)
+        .fetch_one(pool)
+        .await?;
     Ok(count)
 }
 

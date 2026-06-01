@@ -35,8 +35,7 @@ pub async fn check_management_key(
                 // Constant-time comparison prevents byte-by-byte timing oracles.
                 // A length mismatch is detected in constant time; the length
                 // itself is public (attacker can measure response size anyway).
-                p_bytes.len() == r_bytes.len()
-                    && bool::from(p_bytes.ct_eq(r_bytes))
+                p_bytes.len() == r_bytes.len() && bool::from(p_bytes.ct_eq(r_bytes))
             }
         };
 
