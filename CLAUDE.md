@@ -48,7 +48,7 @@ OPENAI_API_KEY=sk-... python test_memory.py   # requires running kernel on :8080
 Every `POST /v1/chat/completions` goes through `src/proxy.rs`:
 
 1. **Auth & rate limit** — extract `x-agent-id` (required), `x-session-id` (auto-generated if absent); check per-agent token bucket (`src/rate_limit.rs`)
-2. **Memory retrieval** — embed the last user message; `search_memories_filtered` runs a two-CTE pgvector query; when `GRAPH_RETRIEVAL_ENABLED=true`, a one-hop graph walk augments the vector results (entity name match → `memory_graph` relations → `memory_entity_links` fetch); inject results as a `<retrieved_memories>` system message at position 0
+2. **Memory retrieval** — embed the last user message; `search_memories_filtered` runs a two-CTE pgvector query; when `AMP_ENABLED` or `RMK_ENABLED`, a `RetrievalAugmenter` re-ranks results by subtracting co-access graph bonuses from the cosine distance; when `GRAPH_RETRIEVAL_ENABLED=true`, a one-hop entity graph walk further augments the set; inject results as a `<retrieved_memories>` system message at position 0; background-record pairwise co-access edges for all retrieved memories
 3. **Forward upstream** — translate request format via `Provider::build_request`, add any provider-specific headers
 4. **Tee response** — for OpenAI/Gemini: stream chunks to client while capturing the full body; for Anthropic: buffer entirely (Anthropic's wire format differs), then re-emit as synthetic OpenAI SSE/JSON so callers using the OpenAI SDK need zero changes
 5. **Background extraction** — `tokio::spawn(extract_and_store(...))`: calls the extractor LLM to pull structured facts, batch-embeds them in one API call, stores to Postgres
@@ -126,7 +126,10 @@ Migrations run automatically at startup via `sqlx::migrate!("./migrations")`. Th
 
 ### Authentication
 
-- **Kernel management API** (`/api/v1/*`): `X-Management-Key` or `Authorization: Bearer` header; no-op when `MANAGEMENT_API_KEY` is unset (local dev)
+- **Kernel management API** (`/api/v1/*`): `X-Management-Key` or `Authorization: Bearer` header.
+  - Key comparison uses **constant-time equality** (`subtle::ConstantTimeEq`) to prevent timing side-channel attacks.
+  - **Startup guard**: the server refuses to start unless `MANAGEMENT_API_KEY` is set OR `ALLOW_UNAUTH_MANAGEMENT=true` is explicitly provided. This prevents accidental unauthenticated exposure when the env var is forgotten in a deployment.
+  - Development shortcut: `ALLOW_UNAUTH_MANAGEMENT=true` (logs a prominent warning at startup).
 - **Dashboard**: NextAuth v5 (Auth.js) with Credentials provider; JWT sessions; `session.user.agentId` is derived from email as `email.toLowerCase().replace(/[@.+]/g, "-")`; non-admins are scoped to their own `agentId`
 
 ### Key config variables
@@ -142,14 +145,18 @@ Migrations run automatically at startup via `sqlx::migrate!("./migrations")`. Th
 | `IMPORTANCE_BOOST_FACTOR` | `0.0` | Importance weight in retrieval; 0 = disabled |
 | `IMPORTANCE_REFRESH_BOOST` | `0.05` | Per-retrieval importance bump; 0 = disabled |
 | `RATE_LIMIT_RPM` | `0` | Per-agent request cap; 0 = disabled |
-| `MANAGEMENT_API_KEY` | unset | Unauthenticated if unset |
+| `MANAGEMENT_API_KEY` | unset | Required unless `ALLOW_UNAUTH_MANAGEMENT=true`; protects `/api/v1/*` |
+| `ALLOW_UNAUTH_MANAGEMENT` | `false` | Must be `true` when no management key is set (dev only; logs warning) |
+| `MAX_BODY_BYTES` | `10485760` | Request body size limit in bytes (10 MiB default); HTTP 413 if exceeded |
 | `EMBEDDING_DIMENSION` | `1536` | Must match `vector(N)` in schema |
-| `GRAPH_RETRIEVAL_ENABLED` | `false` | Enable graph-walk augmentation during retrieval (Phase 4.1) |
+| `GRAPH_RETRIEVAL_ENABLED` | `false` | Enable graph-walk augmentation during retrieval |
 | `DB_MAX_CONNECTIONS` | `20` | PgPool max connections |
 | `DB_ACQUIRE_TIMEOUT_SECS` | `5` | Seconds to wait for a pool connection before error |
 | `DB_IDLE_TIMEOUT_SECS` | `300` | Seconds before idle connections are reclaimed |
 | `DEDUP_THRESHOLD` | `0.05` | Cosine distance below which an insert is skipped as a near-duplicate; 0 = disabled |
 | `CONFLICT_DETECTION_ENABLED` | `false` | Enable async LLM-based contradiction detection on each L2 insert |
+| `AMP_ENABLED` | `false` | Enable Adaptive Memory Pressure (co-access graph bonuses, pressure scoring) |
+| `RMK_ENABLED` | `false` | Enable Reflexive Memory Kernel (learned policy θ; implies AMP co-access recording) |
 
 To switch embedding model to bge-small (384 dims): change `EMBEDDING_MODEL`, `EMBEDDING_DIMENSION=384`, and update `vector(1536)` → `vector(384)` in `migrations/0001_initial.sql`.
 
@@ -205,6 +212,62 @@ Prometheus metrics at `GET /metrics` (text format 0.0.4). Key counters/histogram
 - **`memory_entity_links`** (migration 0007) — join table mapping `memory_id → entity_id`. Populated by `extraction.rs` after each turn: every stored memory is linked to every entity extracted in the same turn.
 - **Graph-walk retrieval** (`GRAPH_RETRIEVAL_ENABLED=true`) — `retrieve_relevant` matches entity names from the query against `entities`, walks `memory_graph` one hop, then fetches memories linked to those related entities via `memory_entity_links`. Results are merged after the primary vector set.
 - **Entity disambiguation** (migration 0008, `fuzzystrmatch`) — `upsert_entity` checks `levenshtein(LOWER(name), LOWER(new)) <= 2` before inserting. Near-duplicates (e.g. "Alex" / "Alexander") are merged into the canonical (existing) entity name.
+
+### Adaptive Memory Pressure (AMP)
+
+`AMP_ENABLED=true` activates a closed-loop system that keeps active memory count near a configurable target and builds a co-access pheromone graph.
+
+**Components** (`src/memory/amp/`):
+
+| File | Role |
+|------|------|
+| `pressure.rs` | Stateless formula: `pressure = a·days_stale + b·(1 − utility_ema)`, clamped [0, 1] |
+| `pi_controller.rs` | PI controller that drives the soft-eviction threshold |
+| `co_access.rs` | `CoAccessGraph` — records pairwise co-occurrence edges in `co_access_edges`; provides `get_neighbor_weight_sum` for retrieval bonus |
+| `augmenter.rs` | `RetrievalAugmenter` — subtracts `graph_bonus_weight × neighbour_weight_sum` from cosine distance to re-rank retrieved memories |
+| `utility.rs` | EMA tracker for per-memory retrieval frequency |
+| `config.rs` | `AmpConfig` with defaults for all sub-params |
+
+**New DB columns** added to `memories` (migration 0014):
+- `utility_ema DOUBLE PRECISION` — EMA of retrieval frequency
+- `pressure DOUBLE PRECISION` — computed pressure score
+- `soft_evicted BOOLEAN` — soft-eviction flag
+- `soft_evicted_at TIMESTAMPTZ`
+
+**`co_access_edges` table** (migration 0015): undirected, normalised to `(min_uuid, max_uuid)` order; `weight` accumulates on conflict, capped at `max_edge_weight`. A nightly decay pass (via `rmk_worker::run_co_access_decay_job`) multiplies all weights by `(1 − decay_per_day)` and prunes below `min_edge_weight`.
+
+**Retrieval wiring** (`src/memory/retrieval.rs`): when AMP or RMK is enabled and the result set is non-empty, a `RetrievalAugmenter` is instantiated from `AppState` config. It calls `get_neighbor_weight_sum` for each candidate (5 indexed DB lookups), subtracts the scaled bonus from the cosine distance, and re-sorts before building `Memory` structs.
+
+### Reflexive Memory Kernel (RMK)
+
+`RMK_ENABLED=true` replaces static config thresholds with a **per-agent learned policy vector** θ = `[pressure_a, pressure_b, kp, ki, graph_bonus_weight, retrieval_threshold]`.
+
+**Components** (`src/memory/rmk/`):
+
+| File | Role |
+|------|------|
+| `policy.rs` | `PolicyParams` struct — θ dimensions with AMP-matching defaults |
+| `reward.rs` | `RewardModel`: `R = task·success + 0.5·token_savings + precision@5 − 0.1·eviction_cost` |
+| `meta_learner.rs` | ε-greedy exploration: perturbs each param ±10% of its bounded range with probability `epsilon` (default 0.1); hill-climbing acceptance keeps perturbation only if reward ≥ last reward |
+| `adapter.rs` | `RmkAdapter::apply` — maps θ back to `PressureParams`, `ControllerParams`, `CoAccessParams` |
+| `buffer.rs` | In-memory `EpisodeBuffer` ring-buffer (unused in DB-backed path; reserved for phase 2) |
+| `store.rs` | DB CRUD: `get_latest_policy`, `insert_policy`, `insert_episode`, `get_recent_episode_rewards`, `count_episodes`, `list_all_agent_ids_with_episodes` |
+| `config.rs` | `RmkConfig` with epsilon, buffer_size, min_episodes_before_update, update_cooldown_secs, reward_weights |
+
+**DB tables** (migrations 0017–0018):
+- `rmk_policies` — versioned θ rows per agent; indexed by `agent_id`; latest row wins
+- `rmk_episodes` — per-turn metrics log (task_success, token_savings, retrieval_precision, eviction_cost, reward, policy_id FK)
+
+**Per-request flow** (`src/proxy.rs`):
+1. Fetch latest policy from `rmk_policies` for the agent; use `policy.retrieval_threshold` (falls back to static `RETRIEVAL_THRESHOLD` if no policy exists yet)
+2. Capture `memories_retrieved` and `rmk_policy_id` after retrieval
+3. After the upstream response is dispatched, background-spawn `rmk_store::insert_episode` with computed metrics and reward
+
+**Background worker** (`src/rmk_worker.rs`, spawned from `main.rs`):
+- `run_policy_update_job` — sleeps for `update_cooldown_secs` (default 3600 s); for each agent with ≥ `min_episodes_before_update` (default 20) episodes, applies `MetaLearner::suggest_explore()` and persists the (possibly perturbed) policy
+- `run_co_access_decay_job` — runs once per day; calls `CoAccessGraph::decay_all()` to apply weight decay and prune stale edges
+
+Both workers start when `RMK_ENABLED=true`; `run_co_access_decay_job` also starts when `AMP_ENABLED=true` without RMK.
 
 ### CI/CD (Phase 3)
 

@@ -185,16 +185,21 @@ Expected output:
 
 ## Environment variables
 
-| Variable              | Default                        | Description                                    |
-|-----------------------|--------------------------------|------------------------------------------------|
-| `OPENAI_API_KEY`      | —                              | Used for embeddings + extraction               |
-| `UPSTREAM_BASE_URL`   | `https://api.openai.com`       | LLM provider base URL                         |
-| `EXTRACTOR_MODEL`     | `gpt-4o-mini`                  | Model used for background fact extraction      |
-| `EMBEDDING_MODEL`     | `text-embedding-3-small`       | Embedding model                                |
-| `EMBEDDING_DIMENSION` | `1536`                         | Must match schema; change for bge-small → 384  |
-| `DATABASE_URL`        | *(set by docker-compose)*      | PostgreSQL connection string                   |
-| `PORT`                | `8080`                         | Kernel listen port                             |
-| `RUST_LOG`            | `memoryos_kernel=info`         | Log verbosity                                  |
+| Variable                    | Default                        | Description                                                   |
+|-----------------------------|--------------------------------|---------------------------------------------------------------|
+| `OPENAI_API_KEY`            | —                              | Used for embeddings + extraction                              |
+| `UPSTREAM_BASE_URL`         | `https://api.openai.com`       | LLM provider base URL                                         |
+| `EXTRACTOR_MODEL`           | `gpt-4o-mini`                  | Model used for background fact extraction                     |
+| `EMBEDDING_MODEL`           | `text-embedding-3-small`       | Embedding model                                               |
+| `EMBEDDING_DIMENSION`       | `1536`                         | Must match schema; change for bge-small → 384                 |
+| `DATABASE_URL`              | *(set by docker-compose)*      | PostgreSQL connection string                                  |
+| `PORT`                      | `8080`                         | Kernel listen port                                            |
+| `RUST_LOG`                  | `memoryos_kernel=info`         | Log verbosity                                                 |
+| `MANAGEMENT_API_KEY`        | *(unset)*                      | Required to protect `/api/v1/*`; server won't start without it unless `ALLOW_UNAUTH_MANAGEMENT=true` |
+| `ALLOW_UNAUTH_MANAGEMENT`   | `false`                        | Set `true` for local dev when no management key is configured |
+| `MAX_BODY_BYTES`            | `10485760`                     | Max request body in bytes (10 MiB); returns HTTP 413 if exceeded |
+| `AMP_ENABLED`               | `false`                        | Enable co-access graph bonuses and pressure scoring           |
+| `RMK_ENABLED`               | `false`                        | Enable self-tuning policy θ (implies AMP co-access recording) |
 
 ---
 
@@ -249,19 +254,9 @@ UPSTREAM_BASE_URL=http://host.docker.internal:11434
 ## Production deployment
 
 1. Replace `memoryos_secret` in docker-compose with a strong password
-2. Put Nginx or Caddy in front of port 8080
-3. Set `RUST_LOG=memoryos_kernel=warn` to reduce log volume
-4. Add Postgres replicas / backups for the `postgres_data` volume
-5. The kernel is stateless — scale horizontally behind a load balancer
+2. Set `MANAGEMENT_API_KEY=<strong-secret>` — the server **refuses to start** without it (unless `ALLOW_UNAUTH_MANAGEMENT=true` is set)
+3. Put Nginx or Caddy in front of port 8080 (TLS termination)
+4. Set `RUST_LOG=memoryos_kernel=warn` to reduce log volume
+5. Add Postgres replicas / backups for the `postgres_data` volume
+6. The kernel is stateless — scale horizontally behind a load balancer
 
----
-
-## Next steps
-
-After verifying the MVP works, ask for:
-- `/memory-search` semantic search endpoint (REST)
-- Multi-provider support (Anthropic native, Gemini)
-- LTM archival (automatic L2→L3 compaction for old memories)
-- SSO-protected dashboard
-- Prometheus `/metrics` endpoint
-- OpenTelemetry traces
