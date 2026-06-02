@@ -37,3 +37,10 @@ __pycache__/
 tmp/
 temp/
 cache/
+
+# Benchmark outputs
+benchmarks/results/*
+!benchmarks/results/.gitkeep
+benchmarks/results/**/*.json
+benchmarks/results/**/*.csv
+benchmarks/results/**/*.log

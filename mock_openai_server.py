@@ -11,14 +11,28 @@ import os
 import sys
 import time
 import hashlib
+import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
 PORT = int(os.environ.get("MOCK_PORT", 11435))
 DIM  = int(os.environ.get("EMBEDDING_DIMENSION", 1536))
+EMBEDDING_MODE = os.environ.get("MOCK_EMBEDDING_MODE", "constant").lower()
+MOCK_ARCHIVAL_COMPACTION = os.environ.get("MOCK_ARCHIVAL_COMPACTION", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 EXTRACTION_SIGNAL = "MemoryOS MMU"
 WORKING_MEMORY_SIGNAL = "You are MemoryOS Working Memory"
+COMPACTION_SIGNAL = "You are compressing"
+TOKEN_RE = re.compile(r"[a-z0-9]+")
+STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "for", "from", "how", "i", "in",
+    "is", "it", "me", "my", "of", "on", "or", "the", "this", "to", "what",
+    "with", "you", "your",
+}
 
 
 def make_embedding(text: str, dim: int = DIM) -> list:
@@ -26,9 +40,66 @@ def make_embedding(text: str, dim: int = DIM) -> list:
     This ensures cosine distance = 0 between all pairs, so every memory is
     retrieved regardless of semantic content — correct for integration testing.
     """
+    if EMBEDDING_MODE == "hash":
+        vec = [0.0] * dim
+        tokens = [t for t in TOKEN_RE.findall(text.lower()) if t not in STOPWORDS]
+        if not tokens:
+            tokens = ["empty"]
+        for token in tokens:
+            digest = hashlib.sha256(token.encode()).digest()
+            idx = int.from_bytes(digest[:4], "big") % dim
+            vec[idx] += 1.0
+        norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+        return [v / norm for v in vec]
+
     # All-ones vector normalized to unit norm
     val = 1.0 / math.sqrt(dim)
     return [val] * dim
+
+
+def compaction_response(body: dict) -> dict:
+    """Return deterministic archival compaction output for benchmark runs."""
+    messages = body.get("messages", [])
+    prompt = " ".join(
+        m.get("content", "") for m in messages if isinstance(m.get("content"), str)
+    )
+    source_lines = [
+        line.strip()
+        for line in prompt.splitlines()
+        if line.strip() and line.strip()[0].isdigit()
+    ]
+    facts = [
+        "Benchmark archival sources describe Mira's Nimbus project preferences.",
+        "Nimbus benchmark memories cover Rust services, weekly planning, and audit trails.",
+        "The archived benchmark facts should remain linked to one reversible archival batch.",
+    ]
+    if source_lines:
+        facts[0] = f"Benchmark archival compacted {len(source_lines)} stale source memories."
+
+    content = json.dumps(
+        {
+            "facts": facts,
+            "narrative": (
+                "Mira's Nimbus work repeatedly emphasized Rust service design, "
+                "weekly planning, and auditable memory history. The archived "
+                "material forms one cohesive benchmark storyline."
+            ),
+        }
+    )
+    return {
+        "id": "chatcmpl-mock-compaction",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": body.get("model", "gpt-4o-mini"),
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 120, "completion_tokens": 90, "total_tokens": 210},
+    }
 
 
 def extraction_response(body: dict) -> dict:
@@ -285,7 +356,9 @@ class MockHandler(BaseHTTPRequestHandler):
                 m.get("content", "") for m in messages if isinstance(m.get("content"), str)
             )
 
-            if EXTRACTION_SIGNAL in all_text:
+            if MOCK_ARCHIVAL_COMPACTION and COMPACTION_SIGNAL in all_text:
+                self.send_json(compaction_response(body))
+            elif EXTRACTION_SIGNAL in all_text:
                 self.send_json(extraction_response(body))
             elif WORKING_MEMORY_SIGNAL in all_text:
                 self.send_json(working_memory_response(body))
