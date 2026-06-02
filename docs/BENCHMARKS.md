@@ -8,10 +8,9 @@ not committed by default. Public claims should cite a specific result folder or
 a curated future report, not unmeasured targets.
 
 Latest local validation wrote ignored results under
-`benchmarks/results/20260602T012306Z/` on WSL2 with Docker Compose v5.1.0,
+`benchmarks/results/20260602T014014Z/` on WSL2 with Docker Compose v5.1.0,
 Postgres/pgvector, and the deterministic mock upstream. The main proof summary
-reported `pass`. Optional k6 load testing reported `fail` for the retrieval k6
-script because those endpoints returned non-2xx responses under that k6 script.
+reported `pass`; optional k6 proxy and retrieval scripts also reported `pass`.
 
 | Area | Latest result | Evidence |
 |---|---:|---|
@@ -22,7 +21,7 @@ script because those endpoints returned non-2xx responses under that k6 script.
 | Temporal correctness | Pass | `temporal_correctness.json` |
 | Narrative archival correctness | Pass | `narrative_archival.json` |
 | k6 proxy script | Pass, optional | `k6_proxy_latency.json` |
-| k6 retrieval script | Fail, optional | `k6_retrieval_latency.json` |
+| k6 retrieval script | Pass, optional | `k6_retrieval_latency.json` |
 | PowerShell runner | Not run here | `pwsh: command not found` in this WSL environment |
 
 ## Environment
@@ -31,9 +30,9 @@ The latest summary recorded:
 
 | Field | Value |
 |---|---|
-| Result folder | `benchmarks/results/20260602T012306Z/` |
+| Result folder | `benchmarks/results/20260602T014014Z/` |
 | Branch | `benchmarks/v0.1.0-proof` |
-| Result-run git commit | `cdde86a63bf65fec6e14436b87fb6a01cc2dfd4f` |
+| Result-run git commit | `847f6ae1ebe7d9e43fcd3d3671af046c731514b7` |
 | OS | `Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.39` |
 | RAM | `15Gi` |
 | Docker | `Docker version 29.3.0, build 5927d80` |
@@ -57,10 +56,10 @@ latency. The latest local mock run produced:
 
 | Scenario | Mean | p95 | Mean overhead vs direct | Error rate |
 |---|---:|---:|---:|---:|
-| Direct mock upstream | 0.571 ms | 0.784 ms | n/a | 0.0% |
-| Proxy, empty memory | 3.186 ms | 5.428 ms | 2.615 ms | 0.0% |
-| Proxy, seeded memory | 4.138 ms | 5.198 ms | 3.567 ms | 0.0% |
-| Proxy, seeded with retrieval log | 4.151 ms | 4.607 ms | 3.580 ms | 0.0% |
+| Direct mock upstream | 0.621 ms | 0.883 ms | n/a | 0.0% |
+| Proxy, empty memory | 3.210 ms | 4.971 ms | 2.589 ms | 0.0% |
+| Proxy, seeded memory | 4.199 ms | 5.462 ms | 3.578 ms | 0.0% |
+| Proxy, seeded with retrieval log | 3.822 ms | 4.511 ms | 3.201 ms | 0.0% |
 
 These are local WSL/mock measurements, not universal latency claims.
 
@@ -103,11 +102,11 @@ linkage, completed batch record, and tombstoned source L2 memories.
 
 ### k6
 
-The optional k6 proxy script passed with p95 around 4.93 ms and no failed
-requests. The optional k6 retrieval script failed its HTTP failure threshold:
-all checks were non-2xx in that script, even though the main scripted retrieval,
-temporal, and recall proofs passed. Treat this as a k6-script follow-up, not as
-a blocker for the main proof suite.
+The optional k6 proxy script passed with p95 around 5.53 ms and no failed
+requests. The optional k6 retrieval script passed with p95 around 8.66 ms, zero
+failed HTTP requests, and all endpoint checks passing. A previous k6 retrieval
+run failed because the runner did not pass `MANAGEMENT_API_KEY` into k6; the
+scripted endpoints require `X-Management-Key`.
 
 ## Reproduce
 
@@ -146,7 +145,7 @@ PowerShell was not available in the latest WSL validation environment.
 | Universal token savings or "zero token bloat" | Benchmark includes a case where AEON-IQ uses more tokens | Dataset-specific token tables only |
 | Production-scale retrieval latency at 10,000+ memories | 10,000-memory seed is optional and not in latest run | Curated 10,000+ memory results |
 | Live-provider archival quality | Default suite uses mock compaction | Optional env-gated live provider run |
-| k6 retrieval endpoint health | Optional k6 retrieval script failed in latest run | Fix k6 endpoint setup/script and rerun |
+| k6 as production load proof | k6 is local, optional, and configured with forgiving thresholds | Curated production-like load report |
 
 ## Known Limitations
 

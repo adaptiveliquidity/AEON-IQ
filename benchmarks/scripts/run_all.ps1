@@ -170,15 +170,25 @@ function Invoke-PythonSuite {
 
 function Invoke-K6Suite {
   if (Get-Command k6 -ErrorAction SilentlyContinue) {
-    & k6 run -e AEON_BASE_URL=$env:AEON_BASE_URL benchmarks/k6/proxy_latency.js --summary-export "$ResultsDir\k6_proxy_latency.json"
-    & k6 run -e AEON_BASE_URL=$env:AEON_BASE_URL benchmarks/k6/retrieval_latency.js --summary-export "$ResultsDir\k6_retrieval_latency.json"
+    & k6 run -e AEON_BASE_URL=$env:AEON_BASE_URL -e MANAGEMENT_API_KEY=$env:MANAGEMENT_API_KEY benchmarks/k6/proxy_latency.js --summary-export "$ResultsDir\k6_proxy_latency.json"
+    & k6 run -e AEON_BASE_URL=$env:AEON_BASE_URL -e MANAGEMENT_API_KEY=$env:MANAGEMENT_API_KEY benchmarks/k6/retrieval_latency.js --summary-export "$ResultsDir\k6_retrieval_latency.json"
     return
   }
 
   if (Get-Command docker -ErrorAction SilentlyContinue) {
     $DockerResultsDir = Get-DockerResultsDir
-    & docker run --rm --network host -v "${Root}:/repo" -w /repo -e AEON_BASE_URL=$env:AEON_BASE_URL grafana/k6 run benchmarks/k6/proxy_latency.js --summary-export "$DockerResultsDir/k6_proxy_latency.json"
-    & docker run --rm --network host -v "${Root}:/repo" -w /repo -e AEON_BASE_URL=$env:AEON_BASE_URL grafana/k6 run benchmarks/k6/retrieval_latency.js --summary-export "$DockerResultsDir/k6_retrieval_latency.json"
+    $K6EnvArgs = @(
+      "-e", "AEON_BASE_URL=$env:AEON_BASE_URL",
+      "-e", "MANAGEMENT_API_KEY=$env:MANAGEMENT_API_KEY"
+    )
+    foreach ($Name in @("K6_VUS", "K6_DURATION", "K6_AGENT_ID", "K6_SEARCH_AGENT_ID", "K6_TEMPORAL_AGENT_ID")) {
+      $Value = [Environment]::GetEnvironmentVariable($Name)
+      if ($Value) {
+        $K6EnvArgs += @("-e", "$Name=$Value")
+      }
+    }
+    & docker run --rm --network host -v "${Root}:/repo" -w /repo @K6EnvArgs grafana/k6 run benchmarks/k6/proxy_latency.js --summary-export "$DockerResultsDir/k6_proxy_latency.json"
+    & docker run --rm --network host -v "${Root}:/repo" -w /repo @K6EnvArgs grafana/k6 run benchmarks/k6/retrieval_latency.js --summary-export "$DockerResultsDir/k6_retrieval_latency.json"
   }
 
   if (-not (Test-Path "$ResultsDir\k6_proxy_latency.json") -and -not (Test-Path "$ResultsDir\k6_retrieval_latency.json")) {

@@ -50,11 +50,15 @@ ignored by git unless deliberately curated.
 | `temporal_correctness.json` | Pass/fail checks for time-travel and diff endpoints |
 | `narrative_archival.json` | Pass/fail checks for L3 narrative and batch lineage |
 
-`summary.json` uses `pass`, `partial`, or `fail`:
+`summary.json` includes `proof_status` for required/dependency-gated proofs:
 
 - `pass`: required and dependency-gated proofs completed successfully.
 - `partial`: required proofs passed, but dependency-gated proofs could not run.
 - `fail`: a required proof, or an executed dependency-gated proof, failed.
+
+The full report `status` is `pass`, `pass_with_skips`,
+`pass_with_optional_failures`, `partial`, or `fail`, so optional k6 skips and
+failures are explicit without being hidden inside required proof status.
 
 ## Individual Scripts
 
@@ -73,11 +77,12 @@ the optional 10,000-memory retrieval seed. This can be slow on laptops.
 ## k6
 
 ```bash
-k6 run -e AEON_BASE_URL=http://localhost:8080 benchmarks/k6/proxy_latency.js
-k6 run -e AEON_BASE_URL=http://localhost:8080 benchmarks/k6/retrieval_latency.js
+k6 run -e AEON_BASE_URL=http://localhost:8080 -e MANAGEMENT_API_KEY=sk-mock-test-key-not-real benchmarks/k6/proxy_latency.js
+k6 run -e AEON_BASE_URL=http://localhost:8080 -e MANAGEMENT_API_KEY=sk-mock-test-key-not-real benchmarks/k6/retrieval_latency.js
 ```
 
 If host `k6` is absent, the full runner tries Docker `grafana/k6`. k6 artifacts
 are included in `summary.json` but are optional and do not block the main proof
-status. Thresholds are intentionally forgiving until a public baseline is
-collected.
+status. The full runner passes `MANAGEMENT_API_KEY` into k6 because retrieval,
+temporal, and retrieval-log endpoints require management auth. Thresholds are
+intentionally forgiving until a public baseline is collected.

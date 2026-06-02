@@ -24,6 +24,7 @@ const temporalAtDuration = new Trend("temporal_at_duration");
 const temporalDiffDuration = new Trend("temporal_diff_duration");
 const retrievalLogsDuration = new Trend("retrieval_logs_duration");
 const endpointFailed = new Rate("retrieval_endpoint_failed");
+const reportedFailures = {};
 
 function authHeaders() {
   const headers = { "Content-Type": "application/json" };
@@ -31,6 +32,17 @@ function authHeaders() {
     headers["X-Management-Key"] = __ENV.MANAGEMENT_API_KEY;
   }
   return headers;
+}
+
+function recordEndpoint(label, res, trend) {
+  trend.add(res.timings.duration);
+  const failed = res.status < 200 || res.status >= 300;
+  endpointFailed.add(failed);
+  if (failed && !reportedFailures[label]) {
+    reportedFailures[label] = true;
+    console.error(`${label} non-2xx status=${res.status} body=${String(res.body).slice(0, 240)}`);
+  }
+  check(res, { [`${label} status is 2xx`]: (r) => r.status >= 200 && r.status < 300 });
 }
 
 export default function () {
@@ -42,32 +54,24 @@ export default function () {
     threshold: 0.95,
   });
   let res = http.post(`${base}/api/v1/memories/search`, searchBody, { headers, timeout: "30s" });
-  semanticSearchDuration.add(res.timings.duration);
-  endpointFailed.add(res.status < 200 || res.status >= 300);
-  check(res, { "search status is 2xx": (r) => r.status >= 200 && r.status < 300 });
+  recordEndpoint("search", res, semanticSearchDuration);
 
   const now = new Date().toISOString();
   res = http.get(
     `${base}/api/v1/agents/${temporalAgent}/memories/at?timestamp=${encodeURIComponent(now)}&limit=20&offset=0`,
     { headers, timeout: "30s" },
   );
-  temporalAtDuration.add(res.timings.duration);
-  endpointFailed.add(res.status < 200 || res.status >= 300);
-  check(res, { "memories/at status is 2xx": (r) => r.status >= 200 && r.status < 300 });
+  recordEndpoint("memories/at", res, temporalAtDuration);
 
   const earlier = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   res = http.get(
     `${base}/api/v1/agents/${temporalAgent}/memories/diff?from=${encodeURIComponent(earlier)}&to=${encodeURIComponent(now)}`,
     { headers, timeout: "30s" },
   );
-  temporalDiffDuration.add(res.timings.duration);
-  endpointFailed.add(res.status < 200 || res.status >= 300);
-  check(res, { "memories/diff status is 2xx": (r) => r.status >= 200 && r.status < 300 });
+  recordEndpoint("memories/diff", res, temporalDiffDuration);
 
   res = http.get(`${base}/api/v1/agents/bench-recall/retrievals?limit=20`, { headers, timeout: "30s" });
-  retrievalLogsDuration.add(res.timings.duration);
-  endpointFailed.add(res.status < 200 || res.status >= 300);
-  check(res, { "retrievals status is 2xx": (r) => r.status >= 200 && r.status < 300 });
+  recordEndpoint("retrievals", res, retrievalLogsDuration);
 
   sleep(0.2);
 }

@@ -136,9 +136,9 @@ run_python_suite() {
 
 run_k6_suite() {
   if command -v k6 >/dev/null 2>&1; then
-    k6 run -e AEON_BASE_URL="$AEON_BASE_URL" benchmarks/k6/proxy_latency.js \
+    k6 run -e AEON_BASE_URL="$AEON_BASE_URL" -e MANAGEMENT_API_KEY="$MANAGEMENT_API_KEY" benchmarks/k6/proxy_latency.js \
       --summary-export "$RESULTS_DIR/k6_proxy_latency.json" || true
-    k6 run -e AEON_BASE_URL="$AEON_BASE_URL" benchmarks/k6/retrieval_latency.js \
+    k6 run -e AEON_BASE_URL="$AEON_BASE_URL" -e MANAGEMENT_API_KEY="$MANAGEMENT_API_KEY" benchmarks/k6/retrieval_latency.js \
       --summary-export "$RESULTS_DIR/k6_retrieval_latency.json" || true
     return
   fi
@@ -150,14 +150,23 @@ run_k6_suite() {
     if [[ "$RESULTS_DIR" != "$ROOT"* ]]; then
       extra_mounts=(-v "$RESULTS_DIR:$RESULTS_DIR")
     fi
+    local k6_env=(
+      -e AEON_BASE_URL="$AEON_BASE_URL"
+      -e MANAGEMENT_API_KEY="$MANAGEMENT_API_KEY"
+    )
+    for env_name in K6_VUS K6_DURATION K6_AGENT_ID K6_SEARCH_AGENT_ID K6_TEMPORAL_AGENT_ID; do
+      if [[ -n "${!env_name:-}" ]]; then
+        k6_env+=(-e "$env_name=${!env_name}")
+      fi
+    done
     docker run --rm --network host \
       -v "$ROOT:/repo" "${extra_mounts[@]}" -w /repo \
-      -e AEON_BASE_URL="$AEON_BASE_URL" \
+      "${k6_env[@]}" \
       grafana/k6 run benchmarks/k6/proxy_latency.js \
       --summary-export "$docker_results/k6_proxy_latency.json" || true
     docker run --rm --network host \
       -v "$ROOT:/repo" "${extra_mounts[@]}" -w /repo \
-      -e AEON_BASE_URL="$AEON_BASE_URL" \
+      "${k6_env[@]}" \
       grafana/k6 run benchmarks/k6/retrieval_latency.js \
       --summary-export "$docker_results/k6_retrieval_latency.json" || true
   fi

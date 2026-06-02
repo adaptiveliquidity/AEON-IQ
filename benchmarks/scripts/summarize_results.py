@@ -42,7 +42,9 @@ def read_k6_export(path: Path) -> dict:
 def read_k6(results_dir: Path) -> dict:
     aggregate = results_dir / "k6.json"
     if aggregate.exists():
-        return read_json(aggregate)
+        artifact = read_json(aggregate)
+        artifact["optional"] = True
+        return artifact
 
     proxy = results_dir / "k6_proxy_latency.json"
     retrieval = results_dir / "k6_retrieval_latency.json"
@@ -52,11 +54,14 @@ def read_k6(results_dir: Path) -> dict:
         statuses = {proxy_artifact.get("status"), retrieval_artifact.get("status")}
         return {
             "status": "fail" if "fail" in statuses else "pass",
+            "optional": True,
+            "proxy_status": proxy_artifact.get("status"),
+            "retrieval_status": retrieval_artifact.get("status"),
             "proxy_latency": proxy_artifact,
             "retrieval_latency": retrieval_artifact,
         }
 
-    return {"status": "not_run", "reason": "k6 artifacts were not produced"}
+    return {"status": "not_run", "optional": True, "reason": "k6 artifacts were not produced"}
 
 
 def artifact_status(artifact: object) -> str:
@@ -68,6 +73,8 @@ def artifact_status(artifact: object) -> str:
 def summarize_status(artifacts: dict[str, dict]) -> dict[str, object]:
     failures: list[dict[str, str]] = []
     not_run: list[dict[str, str]] = []
+    optional_failures: list[dict[str, str]] = []
+    optional_not_run: list[dict[str, str]] = []
 
     for name in REQUIRED_ARTIFACTS:
         status = artifact_status(artifacts.get(name))
@@ -101,17 +108,65 @@ def summarize_status(artifacts: dict[str, dict]) -> dict[str, object]:
             }
         )
 
+    k6 = artifacts.get("k6", {})
+    if isinstance(k6, dict):
+        for label, artifact in (
+            ("k6_proxy", k6.get("proxy_latency")),
+            ("k6_retrieval", k6.get("retrieval_latency")),
+        ):
+            if isinstance(artifact, dict):
+                status = artifact_status(artifact)
+                if status == "fail":
+                    optional_failures.append(
+                        {
+                            "artifact": label,
+                            "status": status,
+                            "reason": str(
+                                artifact.get(
+                                    "reason",
+                                    f"optional {label} checks or HTTP requests failed",
+                                )
+                            ),
+                        }
+                    )
+                elif status == "not_run":
+                    optional_not_run.append(
+                        {
+                            "artifact": label,
+                            "reason": str(artifact.get("reason", f"optional {label} was not run")),
+                        }
+                    )
+        if k6.get("status") == "not_run":
+            optional_not_run.append(
+                {
+                    "artifact": "k6",
+                    "reason": str(k6.get("reason", "optional k6 suite was not run")),
+                }
+            )
+
     if failures:
-        overall = "fail"
+        proof_status = "fail"
     elif not_run:
-        overall = "partial"
+        proof_status = "partial"
+    else:
+        proof_status = "pass"
+
+    if proof_status != "pass":
+        overall = proof_status
+    elif optional_failures:
+        overall = "pass_with_optional_failures"
+    elif optional_not_run:
+        overall = "pass_with_skips"
     else:
         overall = "pass"
 
     return {
         "overall_status": overall,
+        "proof_status": proof_status,
         "failures": failures,
         "not_run": not_run,
+        "optional_failures": optional_failures,
+        "optional_not_run": optional_not_run,
         "required_artifacts": list(REQUIRED_ARTIFACTS),
         "dependency_gated_artifacts": list(DEPENDENCY_GATED_ARTIFACTS),
         "optional_artifacts": list(OPTIONAL_ARTIFACTS),
@@ -141,10 +196,13 @@ def main() -> int:
     summary = {
         "status": status["overall_status"],
         "overall_status": status["overall_status"],
+        "proof_status": status["proof_status"],
         "environment": environment,
         "artifacts": artifacts,
         "failures": status["failures"],
         "not_run": status["not_run"],
+        "optional_failures": status["optional_failures"],
+        "optional_not_run": status["optional_not_run"],
         "required_artifacts": status["required_artifacts"],
         "dependency_gated_artifacts": status["dependency_gated_artifacts"],
         "optional_artifacts": status["optional_artifacts"],
