@@ -1,6 +1,5 @@
 # Rust
 /target
-Cargo.lock
 
 # Environment
 .env
@@ -41,6 +40,7 @@ cache/
 
 # Benchmark outputs
 test-artifacts/
+ci-artifacts/
 benchmarks/results/
 benchmarks/results/*
 !benchmarks/results/.gitkeep
