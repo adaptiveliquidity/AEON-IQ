@@ -161,7 +161,10 @@ impl Config {
                 .parse()
                 .context("IMPORTANCE_REFRESH_BOOST must be a float")?,
 
-            management_api_key: std::env::var("MANAGEMENT_API_KEY").ok(),
+            management_api_key: std::env::var("MANAGEMENT_API_KEY")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             allow_unauth_management: std::env::var("ALLOW_UNAUTH_MANAGEMENT")
                 .unwrap_or_else(|_| "false".to_string())
                 .eq_ignore_ascii_case("true"),

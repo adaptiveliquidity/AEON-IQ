@@ -5,6 +5,7 @@ Cargo.lock
 # Environment
 .env
 .env.local
+.venv/
 
 # Dashboard
 dashboard/node_modules
@@ -39,6 +40,8 @@ temp/
 cache/
 
 # Benchmark outputs
+test-artifacts/
+benchmarks/results/
 benchmarks/results/*
 !benchmarks/results/.gitkeep
 benchmarks/results/**/*.json

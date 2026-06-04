@@ -112,7 +112,45 @@ def extraction_response(body: dict) -> dict:
     entities = []
     relations = []
 
-    if "Cael" in transcript and "AEON-IQ" in transcript:
+    if "Alex" in transcript and "NovaPay" in transcript:
+        facts = [
+            {
+                "content": "User's name is Alex (cited: line 1)",
+                "provenance": "user_stated",
+                "cited_line": 1,
+                "confidence": 0.97,
+                "importance_score": 1.0,
+                "importance_source": "extractor",
+            },
+            {
+                "content": "Alex is building NovaPay (cited: line 1)",
+                "provenance": "user_stated",
+                "cited_line": 1,
+                "confidence": 0.97,
+                "importance_score": 0.95,
+                "importance_source": "extractor",
+            },
+            {
+                "content": "NovaPay works on instant cross-border payments (cited: line 1)",
+                "provenance": "user_stated",
+                "cited_line": 1,
+                "confidence": 0.97,
+                "importance_score": 0.9,
+                "importance_source": "extractor",
+            },
+        ]
+        entities = [
+            {"name": "Alex", "type": "person", "confidence": 0.99},
+            {"name": "NovaPay", "type": "company", "confidence": 0.99},
+        ]
+        relations = [
+            {"subject": "Alex", "predicate": "is_building", "object": "NovaPay"},
+            {"subject": "NovaPay", "predicate": "works_on", "object": "instant cross-border payments"},
+        ]
+        summary = "Alex is building NovaPay, a fintech startup for instant cross-border payments."
+        active_entities = ["Alex", "NovaPay"]
+        current_goal = "Build NovaPay"
+    elif "Cael" in transcript and "AEON-IQ" in transcript:
         facts = [
             {
                 "content": "User's name is Cael (cited: line 1)",
@@ -244,7 +282,17 @@ def chat_response(body: dict) -> dict:
             break
 
     # Build reply
-    if "What do you know about me" in user_msg or "what do you know about me" in user_msg:
+    if "what is my name" in user_msg.lower() and "startup" in user_msg.lower():
+        if has_memories and "NovaPay" in all_content:
+            reply = (
+                "Your name is Alex. You are building NovaPay, a fintech startup "
+                "working on instant cross-border payments."
+            )
+        elif has_memories:
+            reply = "Based on the retrieved memories, I can answer with the remembered details."
+        else:
+            reply = "I don't have any prior information about your name or startup."
+    elif "What do you know about me" in user_msg or "what do you know about me" in user_msg:
         if has_memories:
             reply = (
                 "Based on what I remember: Your name is Cael and you are building AEON-IQ. "
@@ -322,7 +370,7 @@ class MockHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
