@@ -3,6 +3,7 @@
 > **Give any AI agent persistent memory with zero code changes.**
 
 [![CI](https://github.com/adaptive-liquidity/aeon-iq/actions/workflows/ci.yml/badge.svg)](https://github.com/adaptive-liquidity/aeon-iq/actions/workflows/ci.yml)
+[![Benchmark Proof](https://github.com/Adaptive-Liquidity/AEON-IQ/actions/workflows/benchmarks.yml/badge.svg)](https://github.com/Adaptive-Liquidity/AEON-IQ/actions/workflows/benchmarks.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io%2Fadaptive--liquidity%2Faeon--iq-blue)](https://ghcr.io/adaptive-liquidity/aeon-iq)
 
@@ -15,6 +16,13 @@ Your App  ──→  POST /v1/chat/completions  ──→  MemoryOS Kernel  ─�
                                                measured in benchmarks         │
                                                       └──── [background] extract + store facts
 ```
+
+## Validation status
+
+- `proof_status`: `pass`
+- Workflow: `Benchmark Proof`
+- Artifact pattern: `aeon-iq-benchmark-proof-<commit>`
+- Evidence: [v0.1.0 validation](docs/VALIDATION_v0.1.0.md) and [benchmark methodology](docs/BENCHMARKS.md)
 
 ## 30-second quickstart
 
@@ -54,6 +62,8 @@ response = client.chat.completions.create(
 | Kernel    | http://localhost:8080  |
 | Dashboard | http://localhost:3000  |
 | Postgres  | localhost:5432         |
+
+Security note: `.env.example` enables `ALLOW_UNAUTH_MANAGEMENT=true` only for local development. For production, set `MANAGEMENT_API_KEY` and `ALLOW_UNAUTH_MANAGEMENT=false`.
 
 ---
 
@@ -413,7 +423,7 @@ Grafana dashboard provisioned automatically at **http://localhost:3001**.
 
 ## Contributing
 
-See [CLAUDE.md](CLAUDE.md) for architecture overview and design decisions.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contributor workflow and [CLAUDE.md](CLAUDE.md) for architecture overview and design decisions.
 
 ```bash
 # Fast type-check (no DB needed)
