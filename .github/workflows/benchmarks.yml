@@ -1,0 +1,92 @@
+name: Benchmark Proof
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      run_k6:
+        description: "Install k6 before running benchmark proof"
+        required: false
+        type: boolean
+        default: true
+      retention_days:
+        description: "Artifact retention days"
+        required: false
+        type: string
+        default: "14"
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark-proof:
+    name: Benchmark proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MANAGEMENT_API_KEY: test-management-key
+      ALLOW_UNAUTH_MANAGEMENT: "false"
+      OPENAI_API_KEY: sk-mock-test-key-not-real
+      UPSTREAM_PROVIDER: openai
+      UPSTREAM_BASE_URL: http://localhost:11435
+      EMBEDDING_BASE_URL: http://localhost:11435
+      EXTRACTOR_BASE_URL: http://localhost:11435
+      RETRIEVAL_THRESHOLD: "0.95"
+      AMP_ENABLED: "true"
+      RMK_ENABLED: "true"
+      MAX_BODY_BYTES: "10485760"
+      BENCHMARK_RESULTS_DIR: benchmarks/results/ci-${{ github.run_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install Python benchmark dependencies
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          python -m pip install -r benchmarks/requirements.txt
+          python -m pip install openai "psycopg[binary]" tiktoken requests httpx pytest
+
+      - name: Install k6
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_k6 }}
+        run: |
+          sudo gpg -k
+          curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6
+
+      - name: Run benchmark proof
+        run: bash benchmarks/scripts/ci_benchmark_proof.sh
+
+      - name: Upload benchmark proof artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aeon-iq-benchmark-proof-${{ github.sha }}
+          path: ci-artifacts/benchmark-proof
+          if-no-files-found: warn
+          retention-days: ${{ github.event_name == 'workflow_dispatch' && inputs.retention_days || '14' }}
