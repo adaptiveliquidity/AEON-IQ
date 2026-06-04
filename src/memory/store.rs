@@ -216,7 +216,7 @@ struct MemoryVersionInput<'a> {
 
 async fn create_memory_version(pool: &sqlx::PgPool, input: MemoryVersionInput<'_>) -> Result<()> {
     // Compute next version number atomically.
-    let next_ver: i64 = sqlx::query_scalar(
+    let next_ver: i32 = sqlx::query_scalar(
         "SELECT COALESCE(MAX(version_number), 0) + 1
          FROM memory_versions WHERE memory_id = $1",
     )
@@ -235,7 +235,7 @@ async fn create_memory_version(pool: &sqlx::PgPool, input: MemoryVersionInput<'_
     )
     .bind(input.memory_id)
     .bind(input.agent_id)
-    .bind(next_ver as i32)
+    .bind(next_ver)
     .bind(input.content)
     .bind(input.memory_type)
     .bind(input.confidence)
@@ -1686,6 +1686,52 @@ mod tests {
             listed.is_empty(),
             "tombstoned memory must be excluded from list"
         );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn update_memory_content_creates_incrementing_patch_version(pool: sqlx::PgPool) {
+        let state = build_state(pool.clone(), 0.0);
+        const AGENT: &str = "version-agent";
+
+        let id = store_memory(
+            &state,
+            AGENT,
+            None,
+            "versioned fact v1",
+            "semantic",
+            0.9,
+            unit_vec(0),
+            None,
+            "user_stated",
+            0.5_f32,
+            "extractor",
+        )
+        .await
+        .unwrap();
+
+        let updated = update_memory_content(&state, id, "versioned fact v2", unit_vec(1))
+            .await
+            .unwrap();
+        assert!(updated, "existing live memory should be patchable");
+
+        let rows: Vec<(i32, String, String)> = sqlx::query_as(
+            "SELECT version_number, content, change_type
+             FROM memory_versions
+             WHERE memory_id = $1
+             ORDER BY version_number ASC",
+        )
+        .bind(id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(rows.len(), 2, "initial plus patch snapshots expected");
+        assert_eq!(rows[0].0, 1);
+        assert_eq!(rows[0].1, "versioned fact v1");
+        assert_eq!(rows[0].2, "initial");
+        assert_eq!(rows[1].0, 2);
+        assert_eq!(rows[1].1, "versioned fact v2");
+        assert_eq!(rows[1].2, "patch");
     }
 
     // ── 20-turn retention ─────────────────────────────────────────────────────

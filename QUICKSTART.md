@@ -1,6 +1,8 @@
 # MemoryOS Kernel — Quickstart
 
-Give any AI agent infinite memory with **zero code changes** and **zero token bloat**.
+Give any AI agent persistent memory with **zero code changes**. Token impact is
+workload-dependent; see `docs/BENCHMARKS.md` for reproducible benchmark
+methodology and local proof scripts.
 
 ---
 
@@ -159,7 +161,7 @@ This atomically:
 
 Open **http://localhost:3000** after starting.
 
-- **Overview** — active agents, stored memories, estimated token & cost savings
+- **Overview** — active agents, stored memories, and heuristic token/cost counters
 - **Memory Explorer** — search + delete memories per agent, manually add memories
   - **Archived** tab — browse tombstoned memories and restore individuals with one click
   - **Batch History** sub-tab — view every L2→L3 compaction run; restore entire batches atomically
@@ -259,4 +261,3 @@ UPSTREAM_BASE_URL=http://host.docker.internal:11434
 4. Set `RUST_LOG=memoryos_kernel=warn` to reduce log volume
 5. Add Postgres replicas / backups for the `postgres_data` volume
 6. The kernel is stateless — scale horizontally behind a load balancer
-

@@ -1,0 +1,103 @@
+{
+  "version": "0.1.0",
+  "agent_id": "bench-recall",
+  "description": "Fictional deterministic memories and scenarios for AEON-IQ benchmark proof runs.",
+  "memories": [
+    {
+      "id_label": "favorite_language",
+      "content": "The benchmark user prefers Rust for backend service architecture.",
+      "expected_queries": [
+        "Which language does the benchmark user prefer for backend service architecture?",
+        "Recall the user's Rust backend preference."
+      ]
+    },
+    {
+      "id_label": "planning_cadence",
+      "content": "The benchmark user schedules Nimbus planning reviews every Wednesday morning.",
+      "expected_queries": [
+        "When are Nimbus planning reviews scheduled?",
+        "Recall the Wednesday morning Nimbus planning cadence."
+      ]
+    },
+    {
+      "id_label": "database_choice",
+      "content": "Nimbus benchmark prototypes store vector memories in Postgres with pgvector.",
+      "expected_queries": [
+        "Which database stores Nimbus vector memories?",
+        "Recall the Postgres pgvector choice."
+      ]
+    },
+    {
+      "id_label": "security_requirement",
+      "content": "The benchmark user requires audit trails before any memory deletion workflow ships.",
+      "expected_queries": [
+        "What is required before memory deletion workflows ship?",
+        "Recall the audit trail deletion requirement."
+      ]
+    },
+    {
+      "id_label": "ui_preference",
+      "content": "The benchmark user wants dense operator dashboards with restrained visual styling.",
+      "expected_queries": [
+        "What dashboard style does the benchmark user prefer?",
+        "Recall the dense restrained operator dashboard preference."
+      ]
+    },
+    {
+      "id_label": "cost_policy",
+      "content": "Nimbus benchmark runs must avoid live provider calls unless explicitly enabled.",
+      "expected_queries": [
+        "When may Nimbus benchmark runs use live provider calls?",
+        "Recall the live provider opt-in policy."
+      ]
+    },
+    {
+      "id_label": "archival_goal",
+      "content": "Narrative archival proof must verify L3 narrative memories and batch linkage.",
+      "expected_queries": [
+        "What must narrative archival proof verify?",
+        "Recall the L3 narrative batch linkage requirement."
+      ]
+    }
+  ],
+  "token_savings_scenarios": [
+    {
+      "name": "profile_recall",
+      "current_message": "What language should we use for the new Nimbus backend service?",
+      "relevant_memories": [
+        "The benchmark user prefers Rust for backend service architecture."
+      ],
+      "baseline_history": [
+        "The benchmark user prefers Rust for backend service architecture.",
+        "Nimbus benchmark prototypes store vector memories in Postgres with pgvector.",
+        "The benchmark user wants dense operator dashboards with restrained visual styling.",
+        "Nimbus benchmark runs must avoid live provider calls unless explicitly enabled.",
+        "The benchmark user schedules Nimbus planning reviews every Wednesday morning."
+      ]
+    },
+    {
+      "name": "archival_question",
+      "current_message": "What evidence should the narrative archival benchmark collect?",
+      "relevant_memories": [
+        "Narrative archival proof must verify L3 narrative memories and batch linkage."
+      ],
+      "baseline_history": [
+        "The benchmark user requires audit trails before any memory deletion workflow ships.",
+        "Narrative archival proof must verify L3 narrative memories and batch linkage.",
+        "Nimbus benchmark prototypes store vector memories in Postgres with pgvector.",
+        "The benchmark user schedules Nimbus planning reviews every Wednesday morning."
+      ]
+    },
+    {
+      "name": "small_context_overhead",
+      "current_message": "Say hello.",
+      "relevant_memories": [
+        "The benchmark user wants dense operator dashboards with restrained visual styling.",
+        "The benchmark user requires audit trails before any memory deletion workflow ships."
+      ],
+      "baseline_history": [
+        "The benchmark user wants dense operator dashboards with restrained visual styling."
+      ]
+    }
+  ]
+}

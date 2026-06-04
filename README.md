@@ -12,7 +12,7 @@ MemoryOS Kernel is a **transparent OpenAI-compatible proxy** that sits between y
 Your App  ──→  POST /v1/chat/completions  ──→  MemoryOS Kernel  ──→  OpenAI / Anthropic / Ollama
                                                       │                        │
                                                inject memories          stream response
-                                               (< 5 ms overhead)              │
+                                               measured in benchmarks         │
                                                       └──── [background] extract + store facts
 ```
 
@@ -54,6 +54,16 @@ response = client.chat.completions.create(
 | Kernel    | http://localhost:8080  |
 | Dashboard | http://localhost:3000  |
 | Postgres  | localhost:5432         |
+
+---
+
+## Benchmarks
+
+AEON-IQ includes a reproducible benchmark/proof suite for proxy latency,
+retrieval latency, estimated token reduction, recall quality, temporal memory
+correctness, and narrative archival correctness. See
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md) for methodology, current claim
+support, known limitations, and rerun instructions.
 
 ---
 
@@ -362,7 +372,7 @@ curl -H "X-Management-Key: $MANAGEMENT_API_KEY" \
 
 Open **http://localhost:3000** after `docker compose up`.
 
-- **Overview** — agent count, total memories, injection hit rate, estimated token savings
+- **Overview** — agent count, total memories, injection hit rate, and heuristic token counters
 - **Memory Explorer** — browse, search, manually add, and delete memories per agent
   - **Archived** tab — view tombstoned memories; restore individuals with one click
   - **Batch History** — every L2→L3 compaction run with full restore support

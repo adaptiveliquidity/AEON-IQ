@@ -85,7 +85,7 @@ export default async function OverviewPage() {
     : agents.agents.filter((a) => a.agent_id === agentId);
 
   const myAgent = visibleAgents.find((a) => a.agent_id === agentId);
-  const costSaved = ((stats.tokens_saved_estimate / 1_000_000) * 2.5).toFixed(4);
+  const costIndicator = ((stats.tokens_saved_estimate / 1_000_000) * 2.5).toFixed(4);
 
   return (
     <div className="space-y-8">
@@ -116,16 +116,16 @@ export default async function OverviewPage() {
         />
         <StatCard
           icon={Zap}
-          label="Tokens Saved (est.)"
+          label="Token Heuristic"
           value={stats.tokens_saved_estimate.toLocaleString()}
-          sub="vs. naive context stuffing"
+          sub="rough context indicator"
           color="bg-yellow-500/10 text-yellow-400"
         />
         <StatCard
           icon={Coins}
-          label="Cost Saved (est.)"
-          value={`$${costSaved}`}
-          sub="at $2.50 / 1M tokens"
+          label="Cost Indicator"
+          value={`$${costIndicator}`}
+          sub="heuristic, not billing proof"
           color="bg-purple-500/10 text-purple-400"
         />
       </div>
