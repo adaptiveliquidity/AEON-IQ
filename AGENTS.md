@@ -37,7 +37,7 @@ The kernel requires **Rust 1.96+** (`edition2024`). Run `rustup default stable` 
 | Rust integration tests | `DATABASE_URL=postgresql://memoryos:memoryos_secret@localhost:5432/memoryos cargo test` | Needs Postgres |
 | Dashboard lint | `cd dashboard && npm run lint` | |
 | Dashboard build | `cd dashboard && npm run build` | Set `AUTH_SECRET`, `NEXTAUTH_URL`, etc. (see CI workflow) |
-| MCP server | `cd mcp-server && npm install && npm run build` | No lockfile; use `npm install` not `npm ci` |
+| MCP server | `cd mcp-server && npm ci && npm run build` | |
 
 ### Hello-world / smoke test
 
