@@ -171,6 +171,32 @@ pub struct MemoryDiffResponse {
     pub retrieval_activity: RetrievalActivityDto,
 }
 
+#[derive(Deserialize)]
+pub struct HypervisorTimelineEventBody {
+    pub session_id: Option<String>,
+    pub nexus_snapshot_id: Option<Uuid>,
+    pub capsule_digest: Option<String>,
+    pub event_type: String,
+}
+
+#[derive(Deserialize)]
+pub struct TimelineAtQuery {
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+pub struct HypervisorTimelineRecordResponse {
+    pub id: String,
+    pub recorded: bool,
+}
+
+#[derive(Serialize)]
+pub struct SnapshotResolutionResponse {
+    pub snapshot_id: String,
+    pub occurred_at: String,
+    pub event_type: String,
+}
+
 #[derive(Serialize)]
 pub struct ArchivedMemoryDto {
     pub id: String,
@@ -333,6 +359,13 @@ fn to_time_travel_dto(row: &store::TemporalMemoryVersion) -> TimeTravelMemoryDto
         created_at: row.memory_created_at.to_rfc3339(),
         version_created_at: row.version_created_at.to_rfc3339(),
     }
+}
+
+fn is_known_hypervisor_event(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "snapshot_created" | "capability_denied" | "proof_capsule_emitted"
+    )
 }
 
 #[derive(Deserialize)]
@@ -603,6 +636,68 @@ pub async fn memories_diff(
             unique_memories_recalled,
         },
     }))
+}
+
+/// POST /api/v1/agents/:id/timeline
+///
+/// Records a Nexus Cognitive Hypervisor event in AEON-IQ's append-only ledger.
+pub async fn record_hypervisor_timeline_event(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<HypervisorTimelineEventBody>,
+) -> Result<Json<HypervisorTimelineRecordResponse>, (StatusCode, String)> {
+    if !is_known_hypervisor_event(&body.event_type) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("unknown hypervisor event_type '{}'", body.event_type),
+        ));
+    }
+
+    let id = store::record_hypervisor_event(
+        &state,
+        &agent_id,
+        body.session_id.as_deref(),
+        body.nexus_snapshot_id,
+        body.capsule_digest.as_deref(),
+        &body.event_type,
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(HypervisorTimelineRecordResponse {
+        id: id.to_string(),
+        recorded: true,
+    }))
+}
+
+/// GET /api/v1/agents/:id/timeline/at
+///
+/// Resolves the latest Nexus snapshot at or before a timestamp.
+pub async fn resolve_hypervisor_snapshot_at(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(query): Query<TimelineAtQuery>,
+) -> Result<Json<SnapshotResolutionResponse>, (StatusCode, String)> {
+    let resolution = store::resolve_snapshot_at(&state, &agent_id, query.timestamp)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    if let Some(resolution) = resolution {
+        Ok(Json(SnapshotResolutionResponse {
+            snapshot_id: resolution.snapshot_id.to_string(),
+            occurred_at: resolution.occurred_at.to_rfc3339(),
+            event_type: resolution.event_type,
+        }))
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            format!(
+                "no hypervisor snapshot found for agent '{}' at or before {}",
+                agent_id,
+                query.timestamp.to_rfc3339()
+            ),
+        ))
+    }
 }
 
 pub async fn create_memory(

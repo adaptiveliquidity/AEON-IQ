@@ -36,6 +36,13 @@ pub struct ArchivedBetweenRow {
     pub archived_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SnapshotResolution {
+    pub snapshot_id: Uuid,
+    pub occurred_at: DateTime<Utc>,
+    pub event_type: String,
+}
+
 type MemoryVersionMeta = (
     String,
     String,
@@ -717,6 +724,65 @@ pub async fn retrieval_activity_between(
     .await?;
 
     Ok((total_row.0, unique_row.0))
+}
+
+// ── Cognitive Hypervisor timeline ────────────────────────────────────────────
+
+pub async fn record_hypervisor_event(
+    state: &AppState,
+    agent_id: &str,
+    session_id: Option<&str>,
+    nexus_snapshot_id: Option<Uuid>,
+    capsule_digest: Option<&str>,
+    event_type: &str,
+) -> Result<Uuid> {
+    let id = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        INSERT INTO cognitive_hypervisor_timeline
+            (agent_id, session_id, nexus_snapshot_id, capsule_digest, event_type)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id
+        "#,
+    )
+    .bind(agent_id)
+    .bind(session_id)
+    .bind(nexus_snapshot_id)
+    .bind(capsule_digest)
+    .bind(event_type)
+    .fetch_one(&state.db)
+    .await?;
+
+    Ok(id)
+}
+
+pub async fn resolve_snapshot_at(
+    state: &AppState,
+    agent_id: &str,
+    at: DateTime<Utc>,
+) -> Result<Option<SnapshotResolution>> {
+    let row = sqlx::query_as::<_, (Uuid, DateTime<Utc>, String)>(
+        r#"
+        SELECT nexus_snapshot_id, occurred_at, event_type
+        FROM cognitive_hypervisor_timeline
+        WHERE agent_id = $1
+          AND occurred_at <= $2
+          AND nexus_snapshot_id IS NOT NULL
+        ORDER BY occurred_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(agent_id)
+    .bind(at)
+    .fetch_optional(&state.db)
+    .await?;
+
+    Ok(row.map(
+        |(snapshot_id, occurred_at, event_type)| SnapshotResolution {
+            snapshot_id,
+            occurred_at,
+            event_type,
+        },
+    ))
 }
 
 /// List tombstoned (archived) memories for an agent, newest-archived first.
@@ -1732,6 +1798,208 @@ mod tests {
         assert_eq!(rows[1].0, 2);
         assert_eq!(rows[1].1, "versioned fact v2");
         assert_eq!(rows[1].2, "patch");
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn timeline_records_and_resolves_snapshot(pool: sqlx::PgPool) {
+        let state = build_state(pool.clone(), 0.0);
+        const AGENT: &str = "timeline-agent";
+
+        let snapshot_a = Uuid::new_v4();
+        let snapshot_b = Uuid::new_v4();
+
+        let event_a = record_hypervisor_event(
+            &state,
+            AGENT,
+            Some("session-a"),
+            Some(snapshot_a),
+            None,
+            "snapshot_created",
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let event_b = record_hypervisor_event(
+            &state,
+            AGENT,
+            Some("session-b"),
+            Some(snapshot_b),
+            None,
+            "snapshot_created",
+        )
+        .await
+        .unwrap();
+
+        let first_at: DateTime<Utc> = sqlx::query_scalar(
+            "SELECT occurred_at FROM cognitive_hypervisor_timeline WHERE id = $1",
+        )
+        .bind(event_a)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let second_at: DateTime<Utc> = sqlx::query_scalar(
+            "SELECT occurred_at FROM cognitive_hypervisor_timeline WHERE id = $1",
+        )
+        .bind(event_b)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            first_at < second_at,
+            "snapshot events should have distinct occurred_at values"
+        );
+
+        let midpoint_micros = (second_at - first_at).num_microseconds().unwrap() / 2;
+        let between_at = first_at + chrono::Duration::microseconds(midpoint_micros);
+
+        let between = resolve_snapshot_at(&state, AGENT, between_at)
+            .await
+            .unwrap()
+            .expect("earlier snapshot should resolve between events");
+        assert_eq!(between.snapshot_id, snapshot_a);
+        assert_eq!(between.occurred_at, first_at);
+        assert_eq!(between.event_type, "snapshot_created");
+
+        let after = resolve_snapshot_at(&state, AGENT, second_at + chrono::Duration::seconds(1))
+            .await
+            .unwrap()
+            .expect("later snapshot should resolve after both events");
+        assert_eq!(after.snapshot_id, snapshot_b);
+        assert_eq!(after.occurred_at, second_at);
+        assert_eq!(after.event_type, "snapshot_created");
+
+        let before = resolve_snapshot_at(&state, AGENT, first_at - chrono::Duration::seconds(1))
+            .await
+            .unwrap();
+        assert!(
+            before.is_none(),
+            "no snapshot should resolve before any event"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn timeline_is_append_only(pool: sqlx::PgPool) {
+        let state = build_state(pool.clone(), 0.0);
+        const AGENT: &str = "append-only-timeline-agent";
+
+        for _ in 0..3 {
+            record_hypervisor_event(
+                &state,
+                AGENT,
+                None,
+                Some(Uuid::new_v4()),
+                None,
+                "snapshot_created",
+            )
+            .await
+            .unwrap();
+        }
+
+        let first_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM cognitive_hypervisor_timeline WHERE agent_id = $1",
+        )
+        .bind(AGENT)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(first_count, 3);
+
+        record_hypervisor_event(
+            &state,
+            AGENT,
+            Some("session-c"),
+            None,
+            Some("sha256:proof-capsule"),
+            "proof_capsule_emitted",
+        )
+        .await
+        .unwrap();
+
+        let second_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM cognitive_hypervisor_timeline WHERE agent_id = $1",
+        )
+        .bind(AGENT)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(second_count, 4);
+        assert!(second_count > first_count);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn time_travel_branches_does_not_prune_memory_versions(pool: sqlx::PgPool) {
+        let state = build_state(pool.clone(), 0.0);
+        const AGENT: &str = "time-travel-branch-agent";
+
+        let id = store_memory(
+            &state,
+            AGENT,
+            None,
+            "branchable fact v1",
+            "semantic",
+            0.9,
+            unit_vec(0),
+            None,
+            "user_stated",
+            0.5_f32,
+            "extractor",
+        )
+        .await
+        .unwrap();
+        update_memory_content(&state, id, "branchable fact v2", unit_vec(1))
+            .await
+            .unwrap();
+
+        let before_restore: i64 =
+            sqlx::query_scalar("SELECT COUNT(*)::bigint FROM memory_versions WHERE memory_id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(
+            before_restore >= 2,
+            "initial insert plus update should create at least two versions"
+        );
+
+        tombstone_memories(&state, &[id]).await.unwrap();
+        let restored = restore_memory(&state, id).await.unwrap();
+        assert!(restored, "tombstoned memory should restore successfully");
+
+        let after_restore: i64 =
+            sqlx::query_scalar("SELECT COUNT(*)::bigint FROM memory_versions WHERE memory_id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(
+            after_restore >= before_restore,
+            "restore must not prune memory_versions history"
+        );
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn resolve_snapshot_at_ignores_rows_without_snapshot_id(pool: sqlx::PgPool) {
+        let state = build_state(pool, 0.0);
+        const AGENT: &str = "null-snapshot-timeline-agent";
+
+        record_hypervisor_event(
+            &state,
+            AGENT,
+            Some("session-a"),
+            None,
+            None,
+            "capability_denied",
+        )
+        .await
+        .unwrap();
+
+        let resolution = resolve_snapshot_at(&state, AGENT, Utc::now())
+            .await
+            .unwrap();
+        assert!(
+            resolution.is_none(),
+            "capability_denied rows without snapshots must not resolve"
+        );
     }
 
     // ── 20-turn retention ─────────────────────────────────────────────────────
