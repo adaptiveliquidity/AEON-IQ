@@ -4,6 +4,7 @@ mod auth;
 mod config;
 mod db;
 mod embeddings;
+mod extraction_worker;
 mod memory;
 mod metrics;
 mod models;
@@ -49,6 +50,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Arc::new(Config::from_env()?);
+    let extraction_outbox_config = config.extraction_outbox_config()?;
     tracing::info!("MemoryOS Kernel starting on port {}", config.port);
 
     // Refuse to start if the management API would be unauthenticated without
@@ -114,6 +116,12 @@ async fn main() -> anyhow::Result<()> {
     // ── Background jobs ───────────────────────────────────────────────────────
     if config.archival_interval_hours > 0 {
         tokio::spawn(archival::run_job(state.clone()));
+    }
+    if extraction_outbox_config.enabled {
+        tokio::spawn(extraction_worker::run_job(
+            state.clone(),
+            extraction_outbox_config.clone(),
+        ));
     }
     if config.rmk_config.enabled {
         tokio::spawn(rmk_worker::run_policy_update_job(state.clone()));

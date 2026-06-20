@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::{
     memory::{
-        extraction::extract_and_store,
+        extraction::{enqueue_extraction_job, extract_and_store, ExtractionPayload},
         retrieval::{build_injection, retrieve_relevant},
         rmk::{
             policy::PolicyParams,
@@ -363,6 +363,48 @@ pub async fn handle_models(
         .expect("static headers; infallible"))
 }
 
+async fn enqueue_or_extract(
+    state: AppState,
+    agent_id: String,
+    session_id: String,
+    messages: Vec<Message>,
+    assistant_content: String,
+    turn_number: i32,
+    importance_override: Option<f32>,
+) {
+    if !state.config.extraction_outbox_enabled() {
+        extract_and_store(
+            state,
+            agent_id,
+            session_id,
+            messages,
+            assistant_content,
+            turn_number,
+            importance_override,
+        )
+        .await;
+        return;
+    }
+
+    let payload = ExtractionPayload::new(
+        messages,
+        assistant_content,
+        turn_number,
+        importance_override,
+    );
+    match enqueue_extraction_job(&state.db, &agent_id, Some(&session_id), &payload).await {
+        Ok(job_id) => info!(agent_id = %agent_id, job_id = %job_id, "Queued extraction job"),
+        Err(e) => {
+            error!(agent_id = %agent_id, "Extraction enqueue failed: {:#}", e);
+            state
+                .metrics
+                .extraction_total
+                .with_label_values(&["error"])
+                .inc();
+        }
+    }
+}
+
 // ── OpenAI / Gemini streaming path ───────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -404,7 +446,7 @@ async fn proxy_streaming(
         if let Ok(captured) = capture_rx.await {
             let content = state.provider.parse_streaming(&captured);
             if !content.is_empty() {
-                extract_and_store(
+                enqueue_or_extract(
                     state,
                     agent_id,
                     session_id,
@@ -456,7 +498,7 @@ async fn proxy_buffered(
     tokio::spawn(async move {
         let content = state.provider.parse_buffered(&bytes_clone);
         if !content.is_empty() {
-            extract_and_store(
+            enqueue_or_extract(
                 state,
                 agent_id,
                 session_id,
@@ -537,7 +579,7 @@ async fn proxy_anthropic(
         let messages_c = original_messages.clone();
         let content_c = content.clone();
         tokio::spawn(async move {
-            extract_and_store(
+            enqueue_or_extract(
                 state_c,
                 agent_id_c,
                 session_id_c,

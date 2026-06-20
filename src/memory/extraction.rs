@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
 use super::store;
@@ -7,6 +8,30 @@ use crate::{
     models::{ExtractionResult, Message},
     AppState,
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractionPayload {
+    pub messages: Vec<Message>,
+    pub assistant_content: String,
+    pub turn_number: i32,
+    pub importance_override: Option<f32>,
+}
+
+impl ExtractionPayload {
+    pub fn new(
+        messages: Vec<Message>,
+        assistant_content: String,
+        turn_number: i32,
+        importance_override: Option<f32>,
+    ) -> Self {
+        Self {
+            messages,
+            assistant_content,
+            turn_number,
+            importance_override,
+        }
+    }
+}
 
 /// Role-aware extraction prompt (Issues 3 + 4).
 ///
@@ -99,6 +124,46 @@ pub async fn extract_and_store(
             .with_label_values(&["error"])
             .inc();
     }
+}
+
+pub async fn enqueue_extraction_job(
+    pool: &sqlx::PgPool,
+    agent_id: &str,
+    session_id: Option<&str>,
+    payload: &ExtractionPayload,
+) -> Result<uuid::Uuid> {
+    let payload_json = serde_json::to_value(payload)?;
+
+    let id = sqlx::query_scalar(
+        "INSERT INTO extraction_jobs (agent_id, session_id, payload, status, next_attempt_at)
+         VALUES ($1, $2, $3, 'pending', NOW())
+         RETURNING id",
+    )
+    .bind(agent_id)
+    .bind(session_id)
+    .bind(payload_json)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(id)
+}
+
+pub async fn run_extraction_payload(
+    state: &AppState,
+    agent_id: &str,
+    session_id: &str,
+    payload: &ExtractionPayload,
+) -> Result<()> {
+    run_extraction(
+        state,
+        agent_id,
+        session_id,
+        &payload.messages,
+        &payload.assistant_content,
+        payload.turn_number,
+        payload.importance_override,
+    )
+    .await
 }
 
 async fn run_extraction(
