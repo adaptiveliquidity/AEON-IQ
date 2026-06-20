@@ -154,6 +154,14 @@ async fn main() -> anyhow::Result<()> {
                 get(api::memories_at_timestamp),
             )
             .route("/agents/:agent_id/memories/diff", get(api::memories_diff))
+            .route(
+                "/agents/:agent_id/timeline",
+                post(api::record_hypervisor_timeline_event),
+            )
+            .route(
+                "/agents/:agent_id/timeline/at",
+                get(api::resolve_hypervisor_snapshot_at),
+            )
             .route("/agents/:agent_id/memories/bulk", post(api::bulk_operation))
             .route(
                 "/agents/:agent_id/memories/archived",
