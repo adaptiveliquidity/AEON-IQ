@@ -50,8 +50,12 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Arc::new(Config::from_env()?);
-    let extraction_outbox_config = config.extraction_outbox_config()?;
-    tracing::info!("MemoryOS Kernel starting on port {}", config.port);
+    let role = config::ProcessRole::from_env()?;
+    tracing::info!(
+        "MemoryOS Kernel starting on port {} with role {:?}",
+        config.port,
+        role
+    );
 
     // Refuse to start if the management API would be unauthenticated without
     // an explicit operator acknowledgement.  This prevents accidental exposure
@@ -114,102 +118,122 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // ── Background jobs ───────────────────────────────────────────────────────
-    if config.archival_interval_hours > 0 {
-        tokio::spawn(archival::run_job(state.clone()));
-    }
-    if extraction_outbox_config.enabled {
-        tokio::spawn(extraction_worker::run_job(
-            state.clone(),
-            extraction_outbox_config.clone(),
-        ));
-    }
-    if config.rmk_config.enabled {
-        tokio::spawn(rmk_worker::run_policy_update_job(state.clone()));
-        tokio::spawn(rmk_worker::run_co_access_decay_job(state.clone()));
-        tokio::spawn(rmk_worker::run_pressure_sweep_job(state.clone()));
-    } else if config.amp_config.enabled {
-        // AMP co-access decay and pressure sweep run even without RMK.
-        tokio::spawn(rmk_worker::run_co_access_decay_job(state.clone()));
-        tokio::spawn(rmk_worker::run_pressure_sweep_job(state.clone()));
+    if role.runs_workers() {
+        let extraction_outbox_config = config.extraction_outbox_config()?;
+        if config.archival_interval_hours > 0 {
+            tokio::spawn(archival::run_job(state.clone()));
+        }
+        if extraction_outbox_config.enabled {
+            tokio::spawn(extraction_worker::run_job(
+                state.clone(),
+                extraction_outbox_config.clone(),
+            ));
+        }
+        if config.rmk_config.enabled {
+            tokio::spawn(rmk_worker::run_policy_update_job(state.clone()));
+            tokio::spawn(rmk_worker::run_co_access_decay_job(state.clone()));
+            tokio::spawn(rmk_worker::run_pressure_sweep_job(state.clone()));
+        } else if config.amp_config.enabled {
+            // AMP co-access decay and pressure sweep run even without RMK.
+            tokio::spawn(rmk_worker::run_co_access_decay_job(state.clone()));
+            tokio::spawn(rmk_worker::run_pressure_sweep_job(state.clone()));
+        }
+    } else {
+        tracing::info!("Background jobs disabled for role {:?}", role);
     }
 
-    // ── Management sub-router (authenticated) ─────────────────────────────────
-    let management = Router::new()
-        .route("/agents", get(api::list_agents))
-        .route("/agents/:agent_id", delete(api::delete_agent))
-        .route("/agents/:agent_id/memories", get(api::list_memories))
-        .route("/agents/:agent_id/memories", post(api::create_memory))
-        .route(
-            "/agents/:agent_id/memories/at",
-            get(api::memories_at_timestamp),
-        )
-        .route("/agents/:agent_id/memories/diff", get(api::memories_diff))
-        .route("/agents/:agent_id/memories/bulk", post(api::bulk_operation))
-        .route(
-            "/agents/:agent_id/memories/archived",
-            get(api::list_archived_memories),
-        )
-        .route(
-            "/agents/:agent_id/archival/batches",
-            get(api::list_archival_batches),
-        )
-        .route(
-            "/agents/:agent_id/archival/trigger",
-            post(api::trigger_archival),
-        )
-        .route("/agents/:agent_id/export", get(api::export_memories))
-        .route("/agents/:agent_id/import", post(api::import_memories))
-        .route("/agents/:agent_id/sessions", get(api::list_sessions))
-        .route(
-            "/agents/:agent_id/sessions/:session_id",
-            get(api::get_session),
-        )
-        .route(
-            "/agents/:agent_id/sessions/:session_id",
-            delete(api::delete_session),
-        )
-        .route("/agents/:agent_id/retrievals", get(api::list_retrievals))
-        .route("/agents/:agent_id/conflicts", get(api::list_conflicts))
-        .route(
-            "/conflicts/:conflict_id/resolve",
-            post(api::resolve_conflict),
-        )
-        .route("/memories/search", post(api::search_memories_semantic))
-        .route("/memories/:id", patch(api::patch_memory))
-        .route("/memories/:id", delete(api::delete_memory))
-        .route("/memories/:id/restore", post(api::restore_memory))
-        .route("/memories/:id/versions", get(api::list_memory_versions))
-        .route("/memories/:id/status", patch(api::patch_memory_status))
-        .route(
-            "/memories/:id/sensitivity",
-            patch(api::patch_memory_sensitivity),
-        )
-        .route(
-            "/archival/batches/:batch_id/restore",
-            post(api::restore_archival_batch),
-        )
-        .route("/stats", get(api::get_stats))
-        .route("/feedback", post(api::post_feedback))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::check_management_key,
-        ));
+    let app = if role.serves_proxy() {
+        // ── Management sub-router (authenticated) ─────────────────────────────
+        let management = Router::new()
+            .route("/agents", get(api::list_agents))
+            .route("/agents/:agent_id", delete(api::delete_agent))
+            .route("/agents/:agent_id/memories", get(api::list_memories))
+            .route("/agents/:agent_id/memories", post(api::create_memory))
+            .route(
+                "/agents/:agent_id/memories/at",
+                get(api::memories_at_timestamp),
+            )
+            .route("/agents/:agent_id/memories/diff", get(api::memories_diff))
+            .route("/agents/:agent_id/memories/bulk", post(api::bulk_operation))
+            .route(
+                "/agents/:agent_id/memories/archived",
+                get(api::list_archived_memories),
+            )
+            .route(
+                "/agents/:agent_id/archival/batches",
+                get(api::list_archival_batches),
+            )
+            .route(
+                "/agents/:agent_id/archival/trigger",
+                post(api::trigger_archival),
+            )
+            .route("/agents/:agent_id/export", get(api::export_memories))
+            .route("/agents/:agent_id/import", post(api::import_memories))
+            .route("/agents/:agent_id/sessions", get(api::list_sessions))
+            .route(
+                "/agents/:agent_id/sessions/:session_id",
+                get(api::get_session),
+            )
+            .route(
+                "/agents/:agent_id/sessions/:session_id",
+                delete(api::delete_session),
+            )
+            .route("/agents/:agent_id/retrievals", get(api::list_retrievals))
+            .route("/agents/:agent_id/conflicts", get(api::list_conflicts))
+            .route(
+                "/conflicts/:conflict_id/resolve",
+                post(api::resolve_conflict),
+            )
+            .route("/memories/search", post(api::search_memories_semantic))
+            .route("/memories/:id", patch(api::patch_memory))
+            .route("/memories/:id", delete(api::delete_memory))
+            .route("/memories/:id/restore", post(api::restore_memory))
+            .route("/memories/:id/versions", get(api::list_memory_versions))
+            .route("/memories/:id/status", patch(api::patch_memory_status))
+            .route(
+                "/memories/:id/sensitivity",
+                patch(api::patch_memory_sensitivity),
+            )
+            .route(
+                "/archival/batches/:batch_id/restore",
+                post(api::restore_archival_batch),
+            )
+            .route("/stats", get(api::get_stats))
+            .route("/feedback", post(api::post_feedback))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::check_management_key,
+            ));
 
-    // ── Root router ───────────────────────────────────────────────────────────
-    let app = Router::new()
-        .route("/v1/chat/completions", post(proxy::handle_chat_completions))
-        .route("/v1/models", get(proxy::handle_models))
-        .nest("/api/v1", management)
-        .route("/metrics", get(metrics::handle_metrics))
-        .route("/health", get(|| async { "OK" }))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            metrics::track_request,
-        ))
-        .layer(DefaultBodyLimit::max(config.max_body_bytes))
-        .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        // ── Root router ───────────────────────────────────────────────────────
+        Router::new()
+            .route("/v1/chat/completions", post(proxy::handle_chat_completions))
+            .route("/v1/models", get(proxy::handle_models))
+            .nest("/api/v1", management)
+            .route("/metrics", get(metrics::handle_metrics))
+            .route("/health", get(|| async { "OK" }))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                metrics::track_request,
+            ))
+            .layer(DefaultBodyLimit::max(config.max_body_bytes))
+            .layer(CorsLayer::permissive())
+            .layer(TraceLayer::new_for_http())
+            .with_state(state)
+    } else {
+        tracing::info!("Proxy routes disabled for worker-only role");
+        Router::new()
+            .route("/metrics", get(metrics::handle_metrics))
+            .route("/health", get(|| async { "OK" }))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                metrics::track_request,
+            ))
+            .layer(DefaultBodyLimit::max(config.max_body_bytes))
+            .layer(CorsLayer::permissive())
+            .layer(TraceLayer::new_for_http())
+            .with_state(state)
+    };
 
     let addr = format!("0.0.0.0:{}", config.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
