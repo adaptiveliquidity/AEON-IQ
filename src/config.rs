@@ -2,6 +2,40 @@ use crate::memory::amp::config::AmpConfig;
 use crate::memory::rmk::config::RmkConfig;
 use anyhow::{Context, Result};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessRole {
+    Proxy,
+    Worker,
+    All,
+}
+
+impl ProcessRole {
+    pub fn from_env() -> Result<Self> {
+        let value = std::env::var("MEMORYOS_ROLE").ok();
+        Self::from_env_value(value.as_deref())
+    }
+
+    fn from_env_value(value: Option<&str>) -> Result<Self> {
+        match value.map(str::trim).filter(|value| !value.is_empty()) {
+            None => Ok(Self::All),
+            Some(value) if value.eq_ignore_ascii_case("proxy") => Ok(Self::Proxy),
+            Some(value) if value.eq_ignore_ascii_case("worker") => Ok(Self::Worker),
+            Some(value) if value.eq_ignore_ascii_case("all") => Ok(Self::All),
+            Some(value) => {
+                anyhow::bail!("MEMORYOS_ROLE must be one of proxy, worker, or all; got {value:?}")
+            }
+        }
+    }
+
+    pub fn serves_proxy(self) -> bool {
+        matches!(self, Self::Proxy | Self::All)
+    }
+
+    pub fn runs_workers(self) -> bool {
+        matches!(self, Self::Worker | Self::All)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ExtractionOutboxConfig {
     pub enabled: bool,
@@ -266,5 +300,57 @@ impl Config {
         std::env::var(name)
             .map(|v| v.eq_ignore_ascii_case("true"))
             .unwrap_or(default)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProcessRole;
+
+    #[test]
+    fn process_role_parses_supported_values() {
+        assert_eq!(
+            ProcessRole::from_env_value(Some("proxy")).unwrap(),
+            ProcessRole::Proxy
+        );
+        assert_eq!(
+            ProcessRole::from_env_value(Some("PROXY")).unwrap(),
+            ProcessRole::Proxy
+        );
+        assert_eq!(
+            ProcessRole::from_env_value(Some("worker")).unwrap(),
+            ProcessRole::Worker
+        );
+        assert_eq!(
+            ProcessRole::from_env_value(Some("all")).unwrap(),
+            ProcessRole::All
+        );
+        assert_eq!(
+            ProcessRole::from_env_value(Some("")).unwrap(),
+            ProcessRole::All
+        );
+        assert_eq!(ProcessRole::from_env_value(None).unwrap(), ProcessRole::All);
+    }
+
+    #[test]
+    fn process_role_rejects_unknown_values() {
+        let error = ProcessRole::from_env_value(Some("bogus")).unwrap_err();
+
+        assert!(
+            error.to_string().contains("MEMORYOS_ROLE"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn process_role_serves_proxy_and_runs_workers_truth_table() {
+        assert!(ProcessRole::Proxy.serves_proxy());
+        assert!(!ProcessRole::Proxy.runs_workers());
+
+        assert!(!ProcessRole::Worker.serves_proxy());
+        assert!(ProcessRole::Worker.runs_workers());
+
+        assert!(ProcessRole::All.serves_proxy());
+        assert!(ProcessRole::All.runs_workers());
     }
 }
