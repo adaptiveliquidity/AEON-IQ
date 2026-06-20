@@ -3,6 +3,14 @@ use crate::memory::rmk::config::RmkConfig;
 use anyhow::{Context, Result};
 
 #[derive(Debug, Clone)]
+pub struct ExtractionOutboxConfig {
+    pub enabled: bool,
+    pub worker_poll_secs: u64,
+    pub max_attempts: u32,
+    pub backoff_base_secs: u64,
+}
+
+#[derive(Debug, Clone)]
 pub struct Config {
     // ── Core ─────────────────────────────────────────────────────────────────
     pub database_url: String,
@@ -230,5 +238,33 @@ impl Config {
                 ..Default::default()
             },
         })
+    }
+
+    pub fn extraction_outbox_config(&self) -> Result<ExtractionOutboxConfig> {
+        Ok(ExtractionOutboxConfig {
+            enabled: Self::env_bool("EXTRACTION_OUTBOX_ENABLED", true),
+            worker_poll_secs: std::env::var("EXTRACTION_WORKER_POLL_SECS")
+                .unwrap_or_else(|_| "1".to_string())
+                .parse()
+                .context("EXTRACTION_WORKER_POLL_SECS must be a positive integer")?,
+            max_attempts: std::env::var("EXTRACTION_MAX_ATTEMPTS")
+                .unwrap_or_else(|_| "5".to_string())
+                .parse()
+                .context("EXTRACTION_MAX_ATTEMPTS must be a positive integer")?,
+            backoff_base_secs: std::env::var("EXTRACTION_BACKOFF_BASE_SECS")
+                .unwrap_or_else(|_| "2".to_string())
+                .parse()
+                .context("EXTRACTION_BACKOFF_BASE_SECS must be a positive integer")?,
+        })
+    }
+
+    pub fn extraction_outbox_enabled(&self) -> bool {
+        Self::env_bool("EXTRACTION_OUTBOX_ENABLED", true)
+    }
+
+    fn env_bool(name: &str, default: bool) -> bool {
+        std::env::var(name)
+            .map(|v| v.eq_ignore_ascii_case("true"))
+            .unwrap_or(default)
     }
 }
