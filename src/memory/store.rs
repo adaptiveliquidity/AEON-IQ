@@ -41,6 +41,8 @@ pub struct SnapshotResolution {
     pub snapshot_id: Uuid,
     pub occurred_at: DateTime<Utc>,
     pub event_type: String,
+    pub branch_id: Option<String>,
+    pub prev_event_digest: Option<String>,
 }
 
 type MemoryVersionMeta = (
@@ -728,19 +730,23 @@ pub async fn retrieval_activity_between(
 
 // ── Cognitive Hypervisor timeline ────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub async fn record_hypervisor_event(
     state: &AppState,
     agent_id: &str,
     session_id: Option<&str>,
     nexus_snapshot_id: Option<Uuid>,
     capsule_digest: Option<&str>,
+    prev_event_digest: Option<&str>,
+    branch_id: Option<&str>,
     event_type: &str,
 ) -> Result<Uuid> {
     let id = sqlx::query_scalar::<_, Uuid>(
         r#"
         INSERT INTO cognitive_hypervisor_timeline
-            (agent_id, session_id, nexus_snapshot_id, capsule_digest, event_type)
-        VALUES ($1, $2, $3, $4, $5)
+            (agent_id, session_id, nexus_snapshot_id, capsule_digest,
+             prev_event_digest, branch_id, event_type)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id
         "#,
     )
@@ -748,6 +754,8 @@ pub async fn record_hypervisor_event(
     .bind(session_id)
     .bind(nexus_snapshot_id)
     .bind(capsule_digest)
+    .bind(prev_event_digest)
+    .bind(branch_id)
     .bind(event_type)
     .fetch_one(&state.db)
     .await?;
@@ -760,14 +768,15 @@ pub async fn resolve_snapshot_at(
     agent_id: &str,
     at: DateTime<Utc>,
 ) -> Result<Option<SnapshotResolution>> {
-    let row = sqlx::query_as::<_, (Uuid, DateTime<Utc>, String)>(
+    let row = sqlx::query_as::<_, (Uuid, DateTime<Utc>, String, Option<String>, Option<String>)>(
         r#"
-        SELECT nexus_snapshot_id, occurred_at, event_type
+        SELECT nexus_snapshot_id, occurred_at, event_type, branch_id, prev_event_digest
         FROM cognitive_hypervisor_timeline
         WHERE agent_id = $1
           AND occurred_at <= $2
           AND nexus_snapshot_id IS NOT NULL
-        ORDER BY occurred_at DESC
+          AND branch_id IS NULL
+        ORDER BY occurred_at DESC, created_at DESC, id DESC
         LIMIT 1
         "#,
     )
@@ -777,10 +786,47 @@ pub async fn resolve_snapshot_at(
     .await?;
 
     Ok(row.map(
-        |(snapshot_id, occurred_at, event_type)| SnapshotResolution {
+        |(snapshot_id, occurred_at, event_type, branch_id, prev_event_digest)| SnapshotResolution {
             snapshot_id,
             occurred_at,
             event_type,
+            branch_id,
+            prev_event_digest,
+        },
+    ))
+}
+
+pub async fn resolve_at_branch(
+    state: &AppState,
+    agent_id: &str,
+    branch_id: &str,
+    at: DateTime<Utc>,
+) -> Result<Option<SnapshotResolution>> {
+    let row = sqlx::query_as::<_, (Uuid, DateTime<Utc>, String, Option<String>, Option<String>)>(
+        r#"
+        SELECT nexus_snapshot_id, occurred_at, event_type, branch_id, prev_event_digest
+        FROM cognitive_hypervisor_timeline
+        WHERE agent_id = $1
+          AND branch_id = $2
+          AND occurred_at <= $3
+          AND nexus_snapshot_id IS NOT NULL
+        ORDER BY occurred_at DESC, created_at DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(agent_id)
+    .bind(branch_id)
+    .bind(at)
+    .fetch_optional(&state.db)
+    .await?;
+
+    Ok(row.map(
+        |(snapshot_id, occurred_at, event_type, branch_id, prev_event_digest)| SnapshotResolution {
+            snapshot_id,
+            occurred_at,
+            event_type,
+            branch_id,
+            prev_event_digest,
         },
     ))
 }
@@ -1814,6 +1860,8 @@ mod tests {
             Some("session-a"),
             Some(snapshot_a),
             None,
+            None,
+            None,
             "snapshot_created",
         )
         .await
@@ -1824,6 +1872,8 @@ mod tests {
             AGENT,
             Some("session-b"),
             Some(snapshot_b),
+            None,
+            None,
             None,
             "snapshot_created",
         )
@@ -1889,6 +1939,8 @@ mod tests {
                 None,
                 Some(Uuid::new_v4()),
                 None,
+                None,
+                None,
                 "snapshot_created",
             )
             .await
@@ -1910,6 +1962,8 @@ mod tests {
             Some("session-c"),
             None,
             Some("sha256:proof-capsule"),
+            None,
+            None,
             "proof_capsule_emitted",
         )
         .await
@@ -1924,6 +1978,107 @@ mod tests {
         .unwrap();
         assert_eq!(second_count, 4);
         assert!(second_count > first_count);
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    async fn timeline_branches_are_append_only_and_resolve_independently(pool: sqlx::PgPool) {
+        let state = build_state(pool.clone(), 0.0);
+        const AGENT: &str = "branch-timeline-agent";
+        const BRANCH: &str = "branch/replay-001";
+
+        let main_snapshot = Uuid::new_v4();
+        let branch_snapshot = Uuid::new_v4();
+
+        record_hypervisor_event(
+            &state,
+            AGENT,
+            Some("session-main"),
+            Some(main_snapshot),
+            Some("sha256:main-event"),
+            None,
+            None,
+            "snapshot_created",
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let branch_event = record_hypervisor_event(
+            &state,
+            AGENT,
+            Some("session-branch"),
+            Some(branch_snapshot),
+            Some("sha256:branch-event"),
+            Some("sha256:main-event"),
+            Some(BRANCH),
+            "time_travel_branch_created",
+        )
+        .await
+        .unwrap();
+
+        let branch_row: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT prev_event_digest, branch_id
+             FROM cognitive_hypervisor_timeline
+             WHERE id = $1",
+        )
+        .bind(branch_event)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(branch_row.0.as_deref(), Some("sha256:main-event"));
+        assert_eq!(branch_row.1.as_deref(), Some(BRANCH));
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM cognitive_hypervisor_timeline WHERE agent_id = $1",
+        )
+        .bind(AGENT)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 2, "branch creation must append instead of rewriting");
+
+        let branch_at: DateTime<Utc> = sqlx::query_scalar(
+            "SELECT occurred_at FROM cognitive_hypervisor_timeline WHERE id = $1",
+        )
+        .bind(branch_event)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let mainline = resolve_snapshot_at(&state, AGENT, branch_at + chrono::Duration::seconds(1))
+            .await
+            .unwrap()
+            .expect("mainline snapshot should remain resolvable");
+        assert_eq!(mainline.snapshot_id, main_snapshot);
+        assert!(
+            mainline.branch_id.is_none(),
+            "mainline resolution must ignore branch rows"
+        );
+
+        let branch = resolve_at_branch(
+            &state,
+            AGENT,
+            BRANCH,
+            branch_at + chrono::Duration::seconds(1),
+        )
+        .await
+        .unwrap()
+        .expect("branch snapshot should resolve on its branch");
+        assert_eq!(branch.snapshot_id, branch_snapshot);
+        assert_eq!(branch.branch_id.as_deref(), Some(BRANCH));
+        assert_eq!(
+            branch.prev_event_digest.as_deref(),
+            Some("sha256:main-event")
+        );
+
+        let missing = resolve_at_branch(
+            &state,
+            AGENT,
+            "branch/unknown",
+            branch_at + chrono::Duration::seconds(1),
+        )
+        .await
+        .unwrap();
+        assert!(missing.is_none(), "unknown branches should not resolve");
     }
 
     #[sqlx::test(migrations = "./migrations")]
@@ -1986,6 +2141,8 @@ mod tests {
             &state,
             AGENT,
             Some("session-a"),
+            None,
+            None,
             None,
             None,
             "capability_denied",

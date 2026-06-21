@@ -176,12 +176,15 @@ pub struct HypervisorTimelineEventBody {
     pub session_id: Option<String>,
     pub nexus_snapshot_id: Option<Uuid>,
     pub capsule_digest: Option<String>,
+    pub prev_event_digest: Option<String>,
+    pub branch_id: Option<String>,
     pub event_type: String,
 }
 
 #[derive(Deserialize)]
 pub struct TimelineAtQuery {
     pub timestamp: DateTime<Utc>,
+    pub branch_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -195,6 +198,8 @@ pub struct SnapshotResolutionResponse {
     pub snapshot_id: String,
     pub occurred_at: String,
     pub event_type: String,
+    pub branch_id: Option<String>,
+    pub prev_event_digest: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -364,7 +369,10 @@ fn to_time_travel_dto(row: &store::TemporalMemoryVersion) -> TimeTravelMemoryDto
 fn is_known_hypervisor_event(event_type: &str) -> bool {
     matches!(
         event_type,
-        "snapshot_created" | "capability_denied" | "proof_capsule_emitted"
+        "snapshot_created"
+            | "capability_denied"
+            | "proof_capsule_emitted"
+            | "time_travel_branch_created"
     )
 }
 
@@ -659,6 +667,8 @@ pub async fn record_hypervisor_timeline_event(
         body.session_id.as_deref(),
         body.nexus_snapshot_id,
         body.capsule_digest.as_deref(),
+        body.prev_event_digest.as_deref(),
+        body.branch_id.as_deref(),
         &body.event_type,
     )
     .await
@@ -678,22 +688,36 @@ pub async fn resolve_hypervisor_snapshot_at(
     Path(agent_id): Path<String>,
     Query(query): Query<TimelineAtQuery>,
 ) -> Result<Json<SnapshotResolutionResponse>, (StatusCode, String)> {
-    let resolution = store::resolve_snapshot_at(&state, &agent_id, query.timestamp)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let resolution = if let Some(branch_id) = query.branch_id.as_deref() {
+        store::resolve_at_branch(&state, &agent_id, branch_id, query.timestamp)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    } else {
+        store::resolve_snapshot_at(&state, &agent_id, query.timestamp)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    };
 
     if let Some(resolution) = resolution {
         Ok(Json(SnapshotResolutionResponse {
             snapshot_id: resolution.snapshot_id.to_string(),
             occurred_at: resolution.occurred_at.to_rfc3339(),
             event_type: resolution.event_type,
+            branch_id: resolution.branch_id,
+            prev_event_digest: resolution.prev_event_digest,
         }))
     } else {
+        let branch_context = query
+            .branch_id
+            .as_deref()
+            .map(|branch_id| format!(" on branch '{}'", branch_id))
+            .unwrap_or_default();
         Err((
             StatusCode::NOT_FOUND,
             format!(
-                "no hypervisor snapshot found for agent '{}' at or before {}",
+                "no hypervisor snapshot found for agent '{}'{} at or before {}",
                 agent_id,
+                branch_context,
                 query.timestamp.to_rfc3339()
             ),
         ))
