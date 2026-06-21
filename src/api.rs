@@ -176,7 +176,6 @@ pub struct HypervisorTimelineEventBody {
     pub session_id: Option<String>,
     pub nexus_snapshot_id: Option<Uuid>,
     pub capsule_digest: Option<String>,
-    pub prev_event_digest: Option<String>,
     pub branch_id: Option<String>,
     pub event_type: String,
 }
@@ -661,13 +660,22 @@ pub async fn record_hypervisor_timeline_event(
         ));
     }
 
+    // H4: compute prev_event_digest server-side — do not trust client-supplied value
+    let prev_event_digest = store::get_latest_event_id(
+        &state,
+        &agent_id,
+        body.session_id.as_deref(),
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
     let id = store::record_hypervisor_event(
         &state,
         &agent_id,
         body.session_id.as_deref(),
         body.nexus_snapshot_id,
         body.capsule_digest.as_deref(),
-        body.prev_event_digest.as_deref(),
+        prev_event_digest.as_deref(),
         body.branch_id.as_deref(),
         &body.event_type,
     )

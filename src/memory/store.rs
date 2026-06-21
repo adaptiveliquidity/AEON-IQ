@@ -763,6 +763,43 @@ pub async fn record_hypervisor_event(
     Ok(id)
 }
 
+pub async fn get_latest_event_id(
+    state: &AppState,
+    agent_id: &str,
+    session_id: Option<&str>,
+) -> Result<Option<String>> {
+    if let Some(sid) = session_id {
+        let row = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT id::text
+            FROM cognitive_hypervisor_timeline
+            WHERE agent_id = $1 AND session_id = $2
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(agent_id)
+        .bind(sid)
+        .fetch_optional(&state.db)
+        .await?;
+        Ok(row)
+    } else {
+        let row = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT id::text
+            FROM cognitive_hypervisor_timeline
+            WHERE agent_id = $1
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(agent_id)
+        .fetch_optional(&state.db)
+        .await?;
+        Ok(row)
+    }
+}
+
 pub async fn resolve_snapshot_at(
     state: &AppState,
     agent_id: &str,
