@@ -661,13 +661,10 @@ pub async fn record_hypervisor_timeline_event(
     }
 
     // H4: compute prev_event_digest server-side — do not trust client-supplied value
-    let prev_event_digest = store::get_latest_event_id(
-        &state,
-        &agent_id,
-        body.session_id.as_deref(),
-    )
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let prev_event_digest =
+        store::get_latest_event_id(&state, &agent_id, body.session_id.as_deref())
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let id = store::record_hypervisor_event(
         &state,
