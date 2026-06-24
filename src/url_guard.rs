@@ -118,11 +118,8 @@ fn blocked_reason(addr: IpAddr) -> Option<&'static str> {
 /// `reqwest::Url::to_string()`).  On failure it returns an `anyhow::Error`
 /// whose message names the offending env-var and the rejection reason.
 pub fn validate_provider_url(var_name: &str, raw: &str) -> anyhow::Result<String> {
-    let url = Url::parse(raw).map_err(|e| {
-        anyhow::anyhow!(
-            "{var_name}: failed to parse URL {raw:?}: {e}"
-        )
-    })?;
+    let url = Url::parse(raw)
+        .map_err(|e| anyhow::anyhow!("{var_name}: failed to parse URL {raw:?}: {e}"))?;
 
     let scheme = url.scheme();
     let allow_insecure = insecure_urls_allowed();
@@ -150,9 +147,9 @@ pub fn validate_provider_url(var_name: &str, raw: &str) -> anyhow::Result<String
         }
     }
 
-    let host = url.host_str().ok_or_else(|| {
-        anyhow::anyhow!("{var_name}: URL {raw:?} has no host")
-    })?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("{var_name}: URL {raw:?} has no host"))?;
 
     // Determine the port to use for socket-addr resolution.
     // If the URL has an explicit port, use it; otherwise fall back to the
@@ -168,9 +165,7 @@ pub fn validate_provider_url(var_name: &str, raw: &str) -> anyhow::Result<String
     let addrs: Vec<IpAddr> = socket_addr_str
         .to_socket_addrs()
         .map_err(|e| {
-            anyhow::anyhow!(
-                "{var_name}: could not resolve host {host:?} in URL {raw:?}: {e}"
-            )
+            anyhow::anyhow!("{var_name}: could not resolve host {host:?} in URL {raw:?}: {e}")
         })?
         .map(|sa| sa.ip())
         .collect();
@@ -213,10 +208,13 @@ mod tests {
     // ── Inner helpers that accept the flag as a parameter ──────────────────
     // This avoids touching the process-global env in parallel tests.
 
-    fn validate_with_flag(var_name: &str, raw: &str, allow_insecure: bool) -> anyhow::Result<String> {
-        let url = Url::parse(raw).map_err(|e| {
-            anyhow::anyhow!("{var_name}: failed to parse URL {raw:?}: {e}")
-        })?;
+    fn validate_with_flag(
+        var_name: &str,
+        raw: &str,
+        allow_insecure: bool,
+    ) -> anyhow::Result<String> {
+        let url = Url::parse(raw)
+            .map_err(|e| anyhow::anyhow!("{var_name}: failed to parse URL {raw:?}: {e}"))?;
 
         let scheme = url.scheme();
 
@@ -230,15 +228,13 @@ mod tests {
                 );
             }
             other => {
-                bail!(
-                    "{var_name}: URL {raw:?} uses unsupported scheme {other:?}."
-                );
+                bail!("{var_name}: URL {raw:?} uses unsupported scheme {other:?}.");
             }
         }
 
-        let host = url.host_str().ok_or_else(|| {
-            anyhow::anyhow!("{var_name}: URL {raw:?} has no host")
-        })?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("{var_name}: URL {raw:?} has no host"))?;
 
         let port = url.port().unwrap_or(match scheme {
             "https" => 443,
@@ -261,9 +257,7 @@ mod tests {
                 continue; // dev: loopback allowed
             }
             if let Some(reason) = blocked_reason(*addr) {
-                bail!(
-                    "{var_name}: URL {raw:?} resolved to {addr} which is a {reason} — blocked."
-                );
+                bail!("{var_name}: URL {raw:?} resolved to {addr} which is a {reason} — blocked.");
             }
         }
 
@@ -275,13 +269,9 @@ mod tests {
     #[test]
     fn rejects_ipv4_metadata_endpoint() {
         // 169.254.169.254 — cloud instance metadata (link-local)
-        let err = validate_with_flag("TEST_VAR", "http://169.254.169.254", false)
-            .unwrap_err();
+        let err = validate_with_flag("TEST_VAR", "http://169.254.169.254", false).unwrap_err();
         let msg = err.to_string();
-        assert!(
-            msg.contains("TEST_VAR"),
-            "error should name the var: {msg}"
-        );
+        assert!(msg.contains("TEST_VAR"), "error should name the var: {msg}");
         assert!(
             msg.contains("169.254.169.254"),
             "error should name the address: {msg}"
@@ -290,15 +280,13 @@ mod tests {
 
     #[test]
     fn rejects_ipv4_loopback() {
-        let err = validate_with_flag("TEST_VAR", "http://127.0.0.1", false)
-            .unwrap_err();
+        let err = validate_with_flag("TEST_VAR", "http://127.0.0.1", false).unwrap_err();
         assert!(err.to_string().contains("127.0.0.1"), "{}", err);
     }
 
     #[test]
     fn rejects_ipv4_private_10_block() {
-        let err = validate_with_flag("TEST_VAR", "https://10.0.0.1", false)
-            .unwrap_err();
+        let err = validate_with_flag("TEST_VAR", "https://10.0.0.1", false).unwrap_err();
         assert!(err.to_string().contains("10.0.0.1"), "{}", err);
     }
 
@@ -306,8 +294,7 @@ mod tests {
     fn rejects_http_without_dev_flag() {
         // api.openai.com is a valid public host — but http is not allowed without dev flag.
         // We test this with an IP that would pass the IP check so we hit the scheme guard.
-        let err = validate_with_flag("TEST_VAR", "http://api.openai.com", false)
-            .unwrap_err();
+        let err = validate_with_flag("TEST_VAR", "http://api.openai.com", false).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("http scheme") || msg.contains("https"),
@@ -320,7 +307,10 @@ mod tests {
     #[test]
     fn blocked_reason_identifies_ipv4_link_local() {
         let addr: IpAddr = "169.254.169.254".parse().unwrap();
-        assert!(blocked_reason(addr).is_some(), "169.254.169.254 must be blocked");
+        assert!(
+            blocked_reason(addr).is_some(),
+            "169.254.169.254 must be blocked"
+        );
     }
 
     #[test]
@@ -392,7 +382,11 @@ mod tests {
     fn accepts_https_public_ip_literal() {
         // Use a public IP literal to avoid DNS dependency.
         let result = validate_with_flag("TEST_VAR", "https://1.1.1.1", false);
-        assert!(result.is_ok(), "public https IP should be accepted: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "public https IP should be accepted: {:?}",
+            result.err()
+        );
     }
 
     // ── Dev-flag path ──────────────────────────────────────────────────────
@@ -403,29 +397,30 @@ mod tests {
         let result = validate_with_flag("TEST_VAR", "http://localhost:8080", true);
         assert!(
             result.is_ok(),
-            "localhost should be allowed with dev flag: {:?}", result.err()
+            "localhost should be allowed with dev flag: {:?}",
+            result.err()
         );
     }
 
     #[test]
     fn dev_flag_still_rejects_metadata_ip() {
         // Even with dev flag, 169.254.169.254 must be blocked.
-        let err = validate_with_flag("TEST_VAR", "http://169.254.169.254", true)
-            .unwrap_err();
+        let err = validate_with_flag("TEST_VAR", "http://169.254.169.254", true).unwrap_err();
         assert!(
             err.to_string().contains("169.254.169.254"),
-            "metadata IP should still be blocked with dev flag: {}", err
+            "metadata IP should still be blocked with dev flag: {}",
+            err
         );
     }
 
     #[test]
     fn dev_flag_still_rejects_private_range() {
         // Even with dev flag, 192.168.x.x must be blocked.
-        let err = validate_with_flag("TEST_VAR", "http://192.168.1.1", true)
-            .unwrap_err();
+        let err = validate_with_flag("TEST_VAR", "http://192.168.1.1", true).unwrap_err();
         assert!(
             err.to_string().contains("192.168.1.1"),
-            "private IP should still be blocked with dev flag: {}", err
+            "private IP should still be blocked with dev flag: {}",
+            err
         );
     }
 
@@ -467,8 +462,7 @@ mod tests {
     #[test]
     fn rejects_ipv4_mapped_loopback_url() {
         // Full URL round-trip: https://[::ffff:127.0.0.1] must be rejected.
-        let err = validate_with_flag("TEST_VAR", "https://[::ffff:127.0.0.1]", false)
-            .unwrap_err();
+        let err = validate_with_flag("TEST_VAR", "https://[::ffff:127.0.0.1]", false).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("loopback") || msg.contains("::ffff"),
@@ -479,8 +473,8 @@ mod tests {
     #[test]
     fn rejects_ipv4_mapped_metadata_url() {
         // Full URL round-trip: https://[::ffff:169.254.169.254] must be rejected.
-        let err = validate_with_flag("TEST_VAR", "https://[::ffff:169.254.169.254]", false)
-            .unwrap_err();
+        let err =
+            validate_with_flag("TEST_VAR", "https://[::ffff:169.254.169.254]", false).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("link-local") || msg.contains("metadata") || msg.contains("169.254"),
@@ -491,8 +485,7 @@ mod tests {
     #[test]
     fn rejects_ipv4_mapped_private_url() {
         // Full URL round-trip: https://[::ffff:10.0.0.1] must be rejected.
-        let err = validate_with_flag("TEST_VAR", "https://[::ffff:10.0.0.1]", false)
-            .unwrap_err();
+        let err = validate_with_flag("TEST_VAR", "https://[::ffff:10.0.0.1]", false).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("private") || msg.contains("10.0.0.1"),
