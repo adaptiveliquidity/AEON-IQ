@@ -5,6 +5,7 @@ mod config;
 mod db;
 mod embeddings;
 mod extraction_worker;
+mod log_utils;
 mod memory;
 mod metrics;
 mod models;

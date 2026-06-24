@@ -5,6 +5,7 @@ use tracing::{error, info, warn};
 use super::store;
 use crate::{
     embeddings::embed_texts,
+    log_utils::truncate_for_log,
     models::{ExtractionResult, Message},
     AppState,
 };
@@ -223,7 +224,12 @@ async fn run_extraction(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(anyhow::anyhow!("Extractor API {}: {}", status, body));
+        return Err(anyhow::anyhow!(
+            "Extractor API {} ({} bytes): {}",
+            status,
+            body.len(),
+            truncate_for_log(&body)
+        ));
     }
 
     let body: serde_json::Value = resp.json().await?;
@@ -236,9 +242,9 @@ async fn run_extraction(
         Err(err) => {
             warn!(
                 agent_id = %agent_id,
-                "Could not parse extraction JSON: {} — raw: {}",
+                "Could not parse extraction JSON: {} — snippet: {}",
                 err,
-                &raw[..raw.len().min(400)]
+                truncate_for_log(raw)
             );
             state
                 .metrics

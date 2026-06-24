@@ -1,4 +1,4 @@
-use crate::AppState;
+use crate::{log_utils::truncate_for_log, AppState};
 use anyhow::{anyhow, Result};
 
 fn embeddings_url(state: &AppState) -> String {
@@ -38,7 +38,12 @@ pub async fn embed_texts(state: &AppState, texts: &[&str]) -> Result<Vec<Vec<f32
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!("Embedding API returned {}: {}", status, body));
+        return Err(anyhow!(
+            "Embedding API returned {} ({} bytes): {}",
+            status,
+            body.len(),
+            truncate_for_log(&body)
+        ));
     }
 
     let body: serde_json::Value = response.json().await?;
