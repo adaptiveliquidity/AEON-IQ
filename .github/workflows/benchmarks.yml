@@ -33,6 +33,7 @@ jobs:
       ALLOW_UNAUTH_MANAGEMENT: "false"
       OPENAI_API_KEY: sk-mock-test-key-not-real
       UPSTREAM_PROVIDER: openai
+      AEON_ALLOW_INSECURE_PROVIDER_URLS: "true"
       UPSTREAM_BASE_URL: http://localhost:11435
       EMBEDDING_BASE_URL: http://localhost:11435
       EXTRACTOR_BASE_URL: http://localhost:11435

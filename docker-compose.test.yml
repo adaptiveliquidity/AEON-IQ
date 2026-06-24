@@ -45,6 +45,7 @@ services:
       - "8080:8080"
     environment:
       DATABASE_URL:               postgresql://memoryos:memoryos_secret@postgres:5432/memoryos
+      AEON_ALLOW_INSECURE_PROVIDER_URLS: "true"
       UPSTREAM_BASE_URL:          http://mock-openai:11435
       UPSTREAM_PROVIDER:          openai
       OPENAI_API_KEY:             sk-mock-test-key-not-real
