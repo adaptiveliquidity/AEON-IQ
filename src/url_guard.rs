@@ -7,6 +7,29 @@
 //! so no client-supplied or server-side API key can be leaked to an internal
 //! endpoint.
 //!
+//! ## Dev flag: `AEON_ALLOW_INSECURE_PROVIDER_URLS=true`
+//!
+//! When this env var is set to `"true"` (never do this in production), the
+//! guard relaxes its rules to support test harnesses and local development:
+//!
+//! **Permitted with the flag:**
+//! - `http` scheme (in addition to `https`)
+//! - Loopback addresses: 127.0.0.0/8, ::1
+//! - Private RFC-1918 ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+//! - IPv6 unique-local: fc00::/7
+//!
+//! **Still blocked even with the flag:**
+//! - Link-local: 169.254.0.0/16 (covers the 169.254.169.254 cloud metadata IP)
+//!   and fe80::/10 — pointing a provider at the instance-metadata service is
+//!   never legitimate and is treated as a SSRF tripwire.
+//! - Multicast and unspecified addresses.
+//! - IPv4-mapped IPv6 addresses wrapping any of the above (e.g.
+//!   `::ffff:169.254.169.254` is still rejected).
+//!
+//! Rationale: test mocks live on loopback or private Docker networks; the flag
+//! is opt-in and never set in production images.  But cloud metadata endpoints
+//! are reachable from both prod and dev, so they stay blocked unconditionally.
+//!
 //! ## Residual DNS-rebinding / TOCTOU risk
 //!
 //! This guard validates URLs **at config-load time** (process startup).
@@ -35,14 +58,18 @@ fn insecure_urls_allowed() -> bool {
 
 /// Classify an IP address and return `Some(reason)` if it must be blocked.
 ///
-/// ### IPv4 ranges blocked
+/// This function classifies addresses **unconditionally** — it does not
+/// consult the dev flag.  Callers are responsible for skipping the check for
+/// ranges that the dev flag permits (loopback and private).
+///
+/// ### IPv4 ranges blocked (always)
 /// - Loopback      127.0.0.0/8    (std: `is_loopback`)
 /// - Link-local    169.254.0.0/16 (std: `is_link_local`) — covers cloud metadata 169.254.169.254
 /// - Private       10/8, 172.16/12, 192.168/16 (std: `is_private`)
 /// - Unspecified   0.0.0.0        (std: `is_unspecified`)
 /// - Multicast     224.0.0.0/4    (std: `is_multicast`)
 ///
-/// ### IPv6 ranges blocked
+/// ### IPv6 ranges blocked (always)
 /// - Loopback      ::1             (std: `is_loopback`)
 /// - Unspecified   ::              (std: `is_unspecified`)
 /// - Multicast     ff00::/8        (std: `is_multicast`)
@@ -99,6 +126,38 @@ fn blocked_reason(addr: IpAddr) -> Option<&'static str> {
     }
 }
 
+/// Returns `true` for addresses that the dev flag is permitted to allow.
+///
+/// These are ranges that are safe for local development and Docker test
+/// harnesses but that must never appear in a production provider URL:
+/// - Loopback (127/8, ::1)
+/// - Private RFC-1918 (10/8, 172.16/12, 192.168/16)
+/// - IPv6 unique-local (fc00::/7)
+///
+/// Link-local, multicast, unspecified, and IPv4-mapped variants of the above
+/// are NOT included here — they are handled by `blocked_reason` regardless of
+/// the flag.
+fn is_dev_allowed(addr: &IpAddr) -> bool {
+    match addr {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() {
+                return true;
+            }
+            // IPv4-mapped addresses: apply the V4 dev-allowed check so that
+            // e.g. ::ffff:127.0.0.1 is treated the same as 127.0.0.1.
+            // (::ffff:169.254.x.x will return false here because link-local
+            // is not in the dev-allowed set, and blocked_reason will catch it.)
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return v4.is_loopback() || v4.is_private();
+            }
+            // Unique-local fc00::/7: octets[0] & 0xfe == 0xfc
+            let octets = v6.octets();
+            octets[0] & 0xfe == 0xfc
+        }
+    }
+}
+
 /// Parse and validate a provider base URL.
 ///
 /// Validation rules (applied in order):
@@ -109,10 +168,14 @@ fn blocked_reason(addr: IpAddr) -> Option<&'static str> {
 /// 4. **IP classification** — the host is resolved to IP address(es) via
 ///    `std::net::ToSocketAddrs`.  If *any* resolved address falls into a blocked
 ///    range the URL is rejected.
-///    - When `AEON_ALLOW_INSECURE_PROVIDER_URLS=true`, loopback addresses are
-///      permitted (so `http://localhost:8080` works in local development), but
-///      link-local (including 169.254.169.254) and other private ranges are
-///      **still blocked** even with the dev flag.
+///    - When `AEON_ALLOW_INSECURE_PROVIDER_URLS=true`, loopback (127/8, ::1) and
+///      private RFC-1918 ranges (10/8, 172.16/12, 192.168/16) and IPv6
+///      unique-local (fc00::/7) are permitted for local development and Docker
+///      test harnesses.
+///    - Link-local (169.254.0.0/16 including 169.254.169.254, fe80::/10),
+///      multicast, and unspecified addresses are **always blocked** even with
+///      the dev flag — pointing a provider at the cloud metadata service is
+///      never legitimate.
 ///
 /// On success the function returns the normalized URL string (as produced by
 /// `reqwest::Url::to_string()`).  On failure it returns an `anyhow::Error`
@@ -175,13 +238,15 @@ pub fn validate_provider_url(var_name: &str, raw: &str) -> anyhow::Result<String
     }
 
     for addr in &addrs {
-        // When the dev flag is on, we allow loopback specifically so that
-        // `http://localhost:8080` or `http://127.0.0.1:8080` works in local
-        // development.  Link-local (including 169.254.169.254) and other
-        // private ranges are still blocked even with the dev flag active.
-        if allow_insecure && addr.is_loopback() {
+        // When the dev flag is on, allow loopback and private ranges so that
+        // `http://localhost:8080` or `http://mock-service:11435` (which resolves
+        // to a private Docker IP) works in local development and test harnesses.
+        // Link-local (including 169.254.169.254), multicast, and unspecified are
+        // still blocked unconditionally — those are never legitimate provider
+        // targets even in development.
+        if allow_insecure && is_dev_allowed(addr) {
             tracing::warn!(
-                "{var_name}: loopback address {addr} permitted because \
+                "{var_name}: address {addr} permitted because \
                  AEON_ALLOW_INSECURE_PROVIDER_URLS=true (never enable in production)"
             );
             continue;
@@ -253,8 +318,8 @@ mod tests {
         }
 
         for addr in &addrs {
-            if allow_insecure && addr.is_loopback() {
-                continue; // dev: loopback allowed
+            if allow_insecure && is_dev_allowed(addr) {
+                continue; // dev: loopback and private allowed
             }
             if let Some(reason) = blocked_reason(*addr) {
                 bail!("{var_name}: URL {raw:?} resolved to {addr} which is a {reason} — blocked.");
@@ -414,13 +479,26 @@ mod tests {
     }
 
     #[test]
-    fn dev_flag_still_rejects_private_range() {
-        // Even with dev flag, 192.168.x.x must be blocked.
-        let err = validate_with_flag("TEST_VAR", "http://192.168.1.1", true).unwrap_err();
+    fn dev_flag_allows_private_range() {
+        // With dev flag, private RFC-1918 ranges must be allowed so that Docker
+        // service names resolving to private IPs work in test harnesses.
+        let result = validate_with_flag("TEST_VAR", "http://192.168.1.1", true);
         assert!(
-            err.to_string().contains("192.168.1.1"),
-            "private IP should still be blocked with dev flag: {}",
-            err
+            result.is_ok(),
+            "private IP 192.168.1.1 should be allowed with dev flag: {:?}",
+            result.err()
+        );
+        let result = validate_with_flag("TEST_VAR", "http://10.0.0.1", true);
+        assert!(
+            result.is_ok(),
+            "private IP 10.0.0.1 should be allowed with dev flag: {:?}",
+            result.err()
+        );
+        let result = validate_with_flag("TEST_VAR", "http://127.0.0.1", true);
+        assert!(
+            result.is_ok(),
+            "loopback 127.0.0.1 should be allowed with dev flag: {:?}",
+            result.err()
         );
     }
 
