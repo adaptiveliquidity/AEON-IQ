@@ -1,5 +1,6 @@
 use crate::memory::amp::config::AmpConfig;
 use crate::memory::rmk::config::RmkConfig;
+use crate::url_guard::validate_provider_url;
 use anyhow::{Context, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,8 +150,11 @@ impl Config {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
             database_url: std::env::var("DATABASE_URL").context("DATABASE_URL is required")?,
-            upstream_base_url: std::env::var("UPSTREAM_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com".to_string()),
+            upstream_base_url: {
+                let raw = std::env::var("UPSTREAM_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.openai.com".to_string());
+                validate_provider_url("UPSTREAM_BASE_URL", &raw)?
+            },
             port: std::env::var("PORT")
                 .unwrap_or_else(|_| "8080".to_string())
                 .parse()
@@ -176,15 +180,21 @@ impl Config {
                 .unwrap_or_else(|_| "1536".to_string())
                 .parse()
                 .context("EMBEDDING_DIMENSION must be a number")?,
-            embedding_base_url: std::env::var("EMBEDDING_BASE_URL").unwrap_or_else(|_| {
-                std::env::var("UPSTREAM_BASE_URL")
-                    .unwrap_or_else(|_| "https://api.openai.com".to_string())
-            }),
+            embedding_base_url: {
+                let raw = std::env::var("EMBEDDING_BASE_URL").unwrap_or_else(|_| {
+                    std::env::var("UPSTREAM_BASE_URL")
+                        .unwrap_or_else(|_| "https://api.openai.com".to_string())
+                });
+                validate_provider_url("EMBEDDING_BASE_URL", &raw)?
+            },
 
             extractor_model: std::env::var("EXTRACTOR_MODEL")
                 .unwrap_or_else(|_| "gpt-4o-mini".to_string()),
-            extractor_base_url: std::env::var("EXTRACTOR_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com".to_string()),
+            extractor_base_url: {
+                let raw = std::env::var("EXTRACTOR_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.openai.com".to_string());
+                validate_provider_url("EXTRACTOR_BASE_URL", &raw)?
+            },
 
             retrieval_threshold: std::env::var("RETRIEVAL_THRESHOLD")
                 .unwrap_or_else(|_| "0.80".to_string())

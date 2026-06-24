@@ -12,6 +12,7 @@ mod providers;
 mod proxy;
 mod rate_limit;
 mod rmk_worker;
+mod url_guard;
 
 use std::sync::Arc;
 
@@ -98,8 +99,13 @@ async fn main() -> anyhow::Result<()> {
     db::run_migrations(&db).await?;
     tracing::info!("Database migrations applied");
 
+    // Redirects are disabled: provider API calls (LLM, embeddings, extraction)
+    // should never be redirected cross-host.  Following redirects by default
+    // would allow a validated public URL to 302 to an internal address
+    // (e.g. 169.254.169.254) at request time, bypassing the startup SSRF guard.
     let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
 
     let m = metrics::Metrics::new()?;
