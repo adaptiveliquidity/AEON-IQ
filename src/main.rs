@@ -5,6 +5,7 @@ mod config;
 mod db;
 mod embeddings;
 mod extraction_worker;
+mod hnsw_maintenance;
 mod log_utils;
 mod memory;
 mod metrics;
@@ -129,6 +130,9 @@ async fn main() -> anyhow::Result<()> {
         let extraction_outbox_config = config.extraction_outbox_config()?;
         if config.archival_interval_hours > 0 {
             tokio::spawn(archival::run_job(state.clone()));
+        }
+        if config.hnsw_maintenance_enabled && config.hnsw_maintenance_interval_hours > 0 {
+            tokio::spawn(hnsw_maintenance::run_job(state.clone()));
         }
         if extraction_outbox_config.enabled {
             tokio::spawn(extraction_worker::run_job(

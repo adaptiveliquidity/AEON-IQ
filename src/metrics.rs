@@ -1,6 +1,6 @@
 use axum::{body::Body, extract::State, http::StatusCode, response::Response};
 use prometheus::{
-    Counter, CounterVec, Encoder, Histogram, HistogramOpts, HistogramVec, Opts, Registry,
+    Counter, CounterVec, Encoder, Gauge, Histogram, HistogramOpts, HistogramVec, Opts, Registry,
     TextEncoder,
 };
 use std::sync::Arc;
@@ -40,6 +40,15 @@ pub struct Metrics {
 
     /// Number of L3 narrative memories produced by the archival path.
     pub narrative_total: Counter,
+
+    /// HNSW maintenance outcomes.
+    pub hnsw_maintenance_total: CounterVec,
+
+    /// HNSW maintenance duration in seconds (start/stop timing).
+    pub hnsw_maintenance_duration_seconds: Histogram,
+
+    /// HNSW maintenance reclaimed row telemetry (last-cycle gauge).
+    pub hnsw_dead_tuples_reclaimed: Gauge,
 
     /// Requests rejected by the per-agent rate limiter.
     pub rate_limited_total: Counter,
@@ -142,6 +151,29 @@ impl Metrics {
             "L3 narrative memories produced by the archival path",
         ))?);
 
+        let hnsw_maintenance_total = reg!(CounterVec::new(
+            Opts::new(
+                "memoryos_hnsw_maintenance_total",
+                "HNSW maintenance cycles by outcome",
+            ),
+            &["status"],
+        )?);
+
+        let hnsw_maintenance_duration_seconds = reg!(Histogram::with_opts(
+            HistogramOpts::new(
+                "memoryos_hnsw_maintenance_duration_seconds",
+                "HNSW maintenance cycle wall-clock duration",
+            )
+            .buckets(vec![
+                30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0, 7200.0, 14400.0, 28800.0,
+            ]),
+        )?);
+
+        let hnsw_dead_tuples_reclaimed = reg!(Gauge::with_opts(Opts::new(
+            "memoryos_hnsw_dead_tuples_reclaimed",
+            "Dead tuple count delta from last HNSW maintenance cycle",
+        ))?);
+
         let rate_limited_total = reg!(Counter::with_opts(Opts::new(
             "memoryos_rate_limited_total",
             "Requests rejected by the per-agent rate limiter",
@@ -179,6 +211,9 @@ impl Metrics {
             archival_total,
             archival_compacted,
             narrative_total,
+            hnsw_maintenance_total,
+            hnsw_maintenance_duration_seconds,
+            hnsw_dead_tuples_reclaimed,
             rate_limited_total,
             extraction_importance,
             high_importance_total,

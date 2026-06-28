@@ -144,6 +144,22 @@ pub struct Config {
     // ── Reflexive Memory Kernel ───────────────────────────────────────────────
     /// RMK is disabled by default.  Set `RMK_ENABLED=true` to activate.
     pub rmk_config: RmkConfig,
+
+    // ── HNSW maintenance ─────────────────────────────────────────────────────
+    /// Enable/disable periodic pgvector HNSW index maintenance.
+    pub hnsw_maintenance_enabled: bool,
+    /// Maintenance cadence in hours. 0 disables automatic runs.
+    pub hnsw_maintenance_interval_hours: u64,
+    /// Run `REINDEX INDEX CONCURRENTLY idx_memories_hnsw` as part of each cycle.
+    pub hnsw_maintenance_reindex_enabled: bool,
+    /// Run `VACUUM` (and `ANALYZE`) on `memories` as part of each cycle.
+    pub hnsw_maintenance_vacuum_enabled: bool,
+    /// Enable `ANALYZE` inside maintenance `VACUUM`.
+    pub hnsw_maintenance_vacuum_analyze: bool,
+    /// Shared advisory-lock key for `pg_advisory_lock` synchronization across workers.
+    pub hnsw_maintenance_advisory_lock_id: i64,
+    /// Optional `maintenance_work_mem` override (`2GB`, `512MB`, ...).
+    pub hnsw_maintenance_work_mem: Option<String>,
 }
 
 impl Config {
@@ -280,6 +296,38 @@ impl Config {
                     .unwrap_or_else(|_| "false".to_string())
                     .eq_ignore_ascii_case("true"),
                 ..Default::default()
+            },
+
+            hnsw_maintenance_enabled: std::env::var("HNSW_MAINTENANCE_ENABLED")
+                .unwrap_or_else(|_| "true".to_string())
+                .eq_ignore_ascii_case("true"),
+            hnsw_maintenance_interval_hours: std::env::var("HNSW_MAINTENANCE_INTERVAL_HOURS")
+                .unwrap_or_else(|_| "168".to_string())
+                .parse()
+                .context("HNSW_MAINTENANCE_INTERVAL_HOURS must be a number")?,
+            hnsw_maintenance_reindex_enabled: std::env::var("HNSW_MAINTENANCE_REINDEX_ENABLED")
+                .unwrap_or_else(|_| "true".to_string())
+                .eq_ignore_ascii_case("true"),
+            hnsw_maintenance_vacuum_enabled: std::env::var("HNSW_MAINTENANCE_VACUUM_ENABLED")
+                .unwrap_or_else(|_| "true".to_string())
+                .eq_ignore_ascii_case("true"),
+            hnsw_maintenance_vacuum_analyze: std::env::var("HNSW_MAINTENANCE_VACUUM_ANALYZE")
+                .unwrap_or_else(|_| "true".to_string())
+                .eq_ignore_ascii_case("true"),
+            hnsw_maintenance_advisory_lock_id: std::env::var("HNSW_MAINTENANCE_ADVISORY_LOCK_ID")
+                .unwrap_or_else(|_| "173456781234".to_string())
+                .parse()
+                .context("HNSW_MAINTENANCE_ADVISORY_LOCK_ID must be a signed integer")?,
+            hnsw_maintenance_work_mem: {
+                let raw = std::env::var("HNSW_MAINTENANCE_WORK_MEM")
+                    .unwrap_or_else(|_| "".to_string())
+                    .trim()
+                    .to_string();
+                if raw.is_empty() {
+                    None
+                } else {
+                    Some(raw)
+                }
             },
         })
     }
