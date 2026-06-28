@@ -113,16 +113,61 @@ Guidance: `m` 16→24–32 and `ef_construction` 64→128–200 for larger/recal
 ### 5. Tombstone retention (optional, reduces index pressure)
 Soft-deleted rows never leave the index. For agents with large tombstoned/L3 history, enforce retention: export (`GET /api/v1/agents/:id/export`), then **hard-delete** aged tombstones so they leave the graph, then `REINDEX`. Irreversible — it drops time-travel history for purged rows.
 
-## Cadence summary
+## Kernel worker scheduling
 
 | Trigger | Action |
 |---|---|
-| Always | autovacuum on; monitor latency + injection hit-rate |
+| Always | worker role (`MEMORYOS_ROLE=worker` or `all`) runs this job on a fixed cadence |
 | `dead_ratio > 0.2` or monthly/quarterly | `REINDEX INDEX CONCURRENTLY` (worker role) |
 | Low recall on tombstoned agents | raise `hnsw.ef_search` |
 | Larger corpus / recall-sensitive | rebuild with higher `m` / `ef_construction` |
 | Unbounded tombstone growth | retention policy → hard-delete aged → reindex |
 | Embedding model/dim change | rebuild index (+ column type) |
+
+### Runtime knobs (environment)
+
+```bash
+HNSW_MAINTENANCE_ENABLED=true
+HNSW_MAINTENANCE_INTERVAL_HOURS=168        # cadence; 0 disables automatic runs
+HNSW_MAINTENANCE_REINDEX_ENABLED=true      # run REINDEX INDEX CONCURRENTLY idx_memories_hnsw
+HNSW_MAINTENANCE_VACUUM_ENABLED=true       # run VACUUM memories
+HNSW_MAINTENANCE_VACUUM_ANALYZE=true       # include ANALYZE in vacuum
+HNSW_MAINTENANCE_WORK_MEM=2GB              # optional session-level maintenance_work_mem
+HNSW_MAINTENANCE_ADVISORY_LOCK_ID=173456781234
+```
+
+The cadence is enforced only on worker processes:
+
+- `MEMORYOS_ROLE=worker` (recommended): maintenance only, no proxy jobs.
+- `MEMORYOS_ROLE=all`: maintenance runs alongside proxy routes.
+- `MEMORYOS_ROLE=proxy`: maintenance never runs.
+
+Advisory-lock behavior:
+
+- At most one worker runs maintenance at a time using `pg_try_advisory_lock(<id>)`.
+- If the lock is held, this process logs:
+  `HNSW maintenance skipped: another worker currently holds advisory lock`
+  and increments the `memoryos_hnsw_maintenance_total{status="skipped"}` metric.
+
+### Observability
+
+Structured logs from `HNSW maintenance complete` include:
+- before/after live rows
+- dead tuple before/after and reclaimed delta
+- before/after index size in bytes
+- row deltas for live rows and index size
+
+Prometheus metrics:
+- `memoryos_hnsw_maintenance_total{status="ok|skipped|error"}`
+- `memoryos_hnsw_maintenance_duration_seconds`
+- `memoryos_hnsw_dead_tuples_reclaimed`
+
+### Manual trigger
+
+There is no dedicated management endpoint for a one-shot maintenance trigger.
+Operational options:
+- Restart a dedicated worker with a short interval to force an early run.
+- Manually set the cadence window low for an emergency maintenance wave, then restore the normal value.
 
 ## Notes
 - Run heavy maintenance (`REINDEX`, large `VACUUM`) on the **`worker`** process so the proxy hot path is unaffected.
