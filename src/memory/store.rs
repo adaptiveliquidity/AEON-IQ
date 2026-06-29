@@ -400,6 +400,7 @@ pub async fn search_memories_all_sensitivities(
 /// Shared query implementation.  When `filter_sensitive` is true, rows with
 /// sensitivity = 'private' or 'secret' are excluded (LLM-injection path).
 /// When false, all sensitivities are returned (management API path).
+#[allow(clippy::too_many_arguments)]
 async fn search_memories_impl(
     state: &AppState,
     agent_id: &str,
