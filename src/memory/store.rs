@@ -389,7 +389,7 @@ pub async fn search_memories_filtered(
     WHERE agent_id = "#,
     );
     qb.push_bind(agent_id);
-    qb.push(" AND archived_at IS NULL AND soft_evicted = FALSE AND status = 'active'");
+    qb.push(" AND archived_at IS NULL AND soft_evicted = FALSE AND status = 'active' AND sensitivity NOT IN ('private', 'secret')");
 
     if let Some(mt) = memory_type {
         qb.push(" AND memory_type = ");
@@ -1340,6 +1340,7 @@ pub async fn agents_with_archivable_memories(
           AND access_count = 0
           AND archived_at IS NULL
           AND importance_score < 0.9
+          AND sensitivity NOT IN ('private', 'secret')
           AND created_at < NOW() - INTERVAL '1 day' * $1
         "#,
     )
@@ -1366,6 +1367,7 @@ pub async fn fetch_archivable_memories(
           AND access_count = 0
           AND archived_at IS NULL
           AND importance_score < 0.9
+          AND sensitivity NOT IN ('private', 'secret')
           AND created_at < NOW() - INTERVAL '1 day' * $2
         ORDER BY created_at ASC
         LIMIT $3

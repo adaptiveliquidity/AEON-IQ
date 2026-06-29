@@ -44,6 +44,7 @@ async fn run_detection(
         "SELECT id, content \
          FROM memories \
          WHERE agent_id = $1 AND id <> $2 AND archived_at IS NULL \
+           AND sensitivity NOT IN ('private', 'secret') \
          ORDER BY embedding <=> $3 \
          LIMIT 5",
     )
