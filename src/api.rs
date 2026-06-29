@@ -824,7 +824,7 @@ pub async fn search_memories_semantic(
     })?;
 
     let search_start = std::time::Instant::now();
-    let rows = store::search_memories_filtered(
+    let rows = store::search_memories_all_sensitivities(
         &state,
         &req.agent_id,
         &embedding,
