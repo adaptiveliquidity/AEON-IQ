@@ -349,16 +349,8 @@ pub async fn search_memories(
     search_memories_filtered(state, agent_id, embedding, limit, 1.0, None, None).await
 }
 
-/// Full-featured search with optional filters on memory_type and session_id.
-/// The `threshold` is an inclusive upper bound on cosine distance (lower = more similar).
-/// Only live (non-tombstoned) memories are returned.
-///
-/// Three-factor scoring:
-///   `adjusted_dist = cosine_dist
-///       * exp(decay_rate * days_stale)
-///       * (1 + importance_boost * (1 - importance_score))`
-/// When `decay_rate = 0.0` and `importance_boost = 0.0` (defaults) the formula
-/// collapses to pure cosine similarity.
+/// Proxy-facing search: excludes private/secret memories so they are never
+/// injected into external LLM calls.  All proxy and internal callers use this.
 pub async fn search_memories_filtered(
     state: &AppState,
     agent_id: &str,
@@ -367,6 +359,57 @@ pub async fn search_memories_filtered(
     threshold: f64,
     memory_type: Option<&str>,
     session_id: Option<&str>,
+) -> Result<Vec<MemorySearchRow>> {
+    search_memories_impl(
+        state,
+        agent_id,
+        embedding,
+        limit,
+        threshold,
+        memory_type,
+        session_id,
+        true,
+    )
+    .await
+}
+
+/// Management-API-facing search: returns all sensitivities including
+/// private/secret so authenticated admins can inspect every stored memory.
+pub async fn search_memories_all_sensitivities(
+    state: &AppState,
+    agent_id: &str,
+    embedding: &[f32],
+    limit: i64,
+    threshold: f64,
+    memory_type: Option<&str>,
+    session_id: Option<&str>,
+) -> Result<Vec<MemorySearchRow>> {
+    search_memories_impl(
+        state,
+        agent_id,
+        embedding,
+        limit,
+        threshold,
+        memory_type,
+        session_id,
+        false,
+    )
+    .await
+}
+
+/// Shared query implementation.  When `filter_sensitive` is true, rows with
+/// sensitivity = 'private' or 'secret' are excluded (LLM-injection path).
+/// When false, all sensitivities are returned (management API path).
+#[allow(clippy::too_many_arguments)]
+async fn search_memories_impl(
+    state: &AppState,
+    agent_id: &str,
+    embedding: &[f32],
+    limit: i64,
+    threshold: f64,
+    memory_type: Option<&str>,
+    session_id: Option<&str>,
+    filter_sensitive: bool,
 ) -> Result<Vec<MemorySearchRow>> {
     let vec = Vector::from(embedding.to_vec());
     let decay_rate = state.config.memory_decay_rate;
@@ -390,6 +433,9 @@ pub async fn search_memories_filtered(
     );
     qb.push_bind(agent_id);
     qb.push(" AND archived_at IS NULL AND soft_evicted = FALSE AND status = 'active'");
+    if filter_sensitive {
+        qb.push(" AND sensitivity NOT IN ('private', 'secret')");
+    }
 
     if let Some(mt) = memory_type {
         qb.push(" AND memory_type = ");
@@ -1255,7 +1301,7 @@ pub async fn get_memories_for_entities(
            WHERE m.agent_id = "#,
     );
     qb.push_bind(agent_id);
-    qb.push(" AND m.archived_at IS NULL AND m.soft_evicted = FALSE AND m.status = 'active' AND LOWER(e.name) IN (");
+    qb.push(" AND m.archived_at IS NULL AND m.soft_evicted = FALSE AND m.status = 'active' AND m.sensitivity NOT IN ('private', 'secret') AND LOWER(e.name) IN (");
     let mut sep = qb.separated(", ");
     for n in &lower_names {
         sep.push_bind(n);
@@ -1340,6 +1386,7 @@ pub async fn agents_with_archivable_memories(
           AND access_count = 0
           AND archived_at IS NULL
           AND importance_score < 0.9
+          AND sensitivity NOT IN ('private', 'secret')
           AND created_at < NOW() - INTERVAL '1 day' * $1
         "#,
     )
@@ -1366,6 +1413,7 @@ pub async fn fetch_archivable_memories(
           AND access_count = 0
           AND archived_at IS NULL
           AND importance_score < 0.9
+          AND sensitivity NOT IN ('private', 'secret')
           AND created_at < NOW() - INTERVAL '1 day' * $2
         ORDER BY created_at ASC
         LIMIT $3
