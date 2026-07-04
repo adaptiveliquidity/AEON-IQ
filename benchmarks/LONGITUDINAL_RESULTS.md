@@ -6,7 +6,7 @@
 > ~0.27–0.33 for LRU/random (~2.7–3.0×)**. The stress test also **confirmed the
 > §4.5 decay-filter bug is severe** (configured decay collapsed recall as memory
 > ages: r1 ~0.95 → r5 ~0.13). That bug was then **fixed and validated** (commit
-> `49cd083` + survival test + green 22-test suite + clean N=40 re-run — §8.2 carries
+> `49cd083` + survival test + green store suite (16 store.rs tests) + clean N=40 re-run — §8.2 carries
 > the before/after curves), and the AMP headline was **re-confirmed post-fix**
 > (0.876–0.903). RMK was found **structurally unmeasurable** by this retrieval-only
 > benchmark (0 episodes recorded — its learning is chat-completion-path only, §4.10 /
@@ -243,8 +243,11 @@ never dropped.
 **Validated three ways:** (1) new unit test `stale_relevant_memory_survives_decay_filter`
 — a cosine-0.10 memory aged 60 days (decayed distance ≈ 2.0 ≫ the 0.80 threshold) is
 still retrieved post-fix, and decay still reorders it behind a fresher, less-relevant
-memory; pre-fix it was dropped. (2) full 22-test `memory::store` suite green (incl.
-`importance_weighted_retrieval`, `retrieval_plan_uses_hnsw_index`) — **no regression.**
+memory; pre-fix it was dropped. (2) the store retrieval suite green — **16 tests in `store.rs`** (22 pass under the
+`cargo test memory::store::` filter, which also matches 6 `extraction_worker::memory::store`
+tests), covering `importance_weighted_retrieval` and `retrieval_plan_uses_hnsw_index` —
+**no regression** (run via the Docker `rust:1.96-slim` path — native cargo cannot link on
+this host, missing Windows SDK; see repro note at end).
 (3) re-run of the three decay conditions at N=40 (§8.2 "after"): the collapse is gone,
 curves are flat, decay is now the documented mild reorder. When `decay_rate = 0` the
 fix is a provable no-op (`exp(0)=1` ⇒ `cosine_dist == distance`), so baseline/amp-only
@@ -328,7 +331,8 @@ the A11 isolation test.
 
 - **The one robust result (still smoke-scale):** *Under memory pressure, AMP's
   adaptive eviction preserves substantially more task-relevant memory than LRU or
-  random* (~1.7–2.2×, consistent across every agent). This is the headline worth
+  random* (~1.7–2.2× **at smoke scale**; the scaled N=40 run gives ~2.5–3.0×, §8.1).
+  This is the headline worth
   pursuing — but it is **still n = 3 and must be confirmed by the publication-scale
   run** before it is stated as a result.
 - **Provisional only (n = 3, noisy):** no *measurable* ranking lift from decay /
@@ -407,20 +411,41 @@ soft-evicts the same settled K to target ≈ 1000), 40 per-agent samples per con
 | aeon-full | **0.888** | 0.300 | 0.289 | **~3.0×** | 0.950 / 0.580 |
 | aeon-full-importance | **0.911** | 0.334 | 0.328 | **~2.7×** | 0.925 / 0.722 |
 
-**AMP retains ~0.88–0.91 of gold under pressure vs ~0.27–0.33 for LRU/random —
-consistent ~2.7–3.0× across every pressure condition.** This is **stronger** than the
-smoke (there AMP 0.81–0.95 vs comparators 0.38–0.50 ≈ 2×): at scale the gold-blind
-comparators fall to ~0.27–0.33, so AMP's relative advantage *widens*. This is the
-headline, now at N=40. It is unaffected by the §4.5 decay bug (pressure is measured on
-its own SQL-seeded distractor corpus, not the aging haystack).
+**AMP retains ~0.88–0.91 of gold under pressure vs ~0.27–0.37 for LRU/random — a
+~2.5–3.0× ratio observed in this single run** (a point estimate, not a seed-averaged
+effect — see caveats below). Larger than the smoke's ~2× (AMP 0.81–0.95 vs comparators
+0.38–0.50). It is unaffected by the §4.5 decay bug (pressure is measured on its own
+SQL-seeded distractor corpus, not the aging haystack).
+
+**Why the comparators drop from smoke to scale — mechanism, not coincidence.** LRU and
+random are gold-blind, so under a fixed eviction budget K they retain gold roughly in
+proportion to the surviving fraction, ≈ (pool − K)/pool. The untruncated N=40 corpus is
+larger, so the same target (≈1000) forces a *higher* eviction fraction (settled K ≈
+2000–2100, ~2× target) → the gold-blind "blind-dilution floor" falls to ~0.27–0.37. AMP
+is insulated because it evicts by learned utility and spares the gold the rounds phase
+reinforced. The widening edge is a predictable consequence of higher pressure at scale,
+not a lucky baseline shift.
 
 **Post-fix confirmation (§4.5 fix did not contaminate the headline).** Re-running the
-decay conditions with the fix in place leaves AMP pressure retention intact: aeon-full
-**0.899** vs LRU 0.309 / random 0.330; aeon-full-importance **0.903** vs LRU 0.369 /
-random 0.330; plus the A11 `amp-rmk` arm **0.895** vs LRU 0.327 / random 0.347.
-Combined with the unchanged `amp-only` 0.876, **AMP holds at 0.876–0.903 (~2.5–3.0×)
-across every arm, before and after the fix** — the fix targets the retrieval threshold,
-which the pressure metric does not depend on.
+decay conditions with the fix leaves AMP pressure retention intact: aeon-full **0.899**
+vs LRU 0.309 / random 0.330; aeon-full-importance **0.903** vs 0.369 / 0.330; the A11
+`amp-rmk` arm **0.895** vs 0.327 / 0.347; unchanged `amp-only` 0.876. **AMP holds at
+0.876–0.903 across every arm, before and after the fix** — the fix targets the retrieval
+threshold, which the pressure metric does not depend on.
+
+**Caveats on this headline — do not overstate precision:**
+- **Single seed (42), no confidence intervals.** Every number is one run; the ~2.5–3.0×
+  is a point estimate, not a variance-bounded effect. "Consistent" here means "held on
+  every arm and every agent in this run," **not** "across seeds."
+- **AMP did not converge.** The PI controller hit the 20-sweep cap with
+  `converged: false` (active ≈ 982 vs target 1000; settled K ≈ 2× target). The
+  comparison stays valid — all three arms evict the *same* settled K — but
+  "convergence" must not be implied.
+- **Ratio depends on the pressure setpoint** (`pressure_multiplier = 2.5`); a different
+  distractor load moves the eviction fraction and hence the absolute ratio. The robust,
+  setpoint-independent claim is: *AMP preserves gold near-fully while gold-blind
+  eviction loses it in proportion to the eviction fraction.*
+- **One embedding model** (`text-embedding-3-small`), one dataset (`longmemeval_s`).
 
 ### 8.2 Recall-vs-age curve (A10) — decay bug found → fixed (before / after; §4.5)
 
@@ -468,8 +493,14 @@ membership is invariant too). Decay is now what it was always documented to be �
 **mild ranking reorder** (decay-only nDCG 0.603 vs baseline 0.824; recall 0.950,
 occasionally pushing gold below rank 10 but **never removing it**), i.e. the "mild drag,
 zero recall loss" the smoke *wrongly assumed* is now actually true. Validated by the
-`stale_relevant_memory_survives_decay_filter` unit test and a green 22-test store suite
-(§4.5). See §8.3 for why the importance variant recovers all the way to recall@10=1.000.
+`stale_relevant_memory_survives_decay_filter` unit test and a green store suite (16
+store.rs tests; §4.5). See §8.3 for why the importance variant recovers to recall@10=1.000.
+
+Note the flat post-fix recall curve is a **definitional** consequence of the fix, not an
+aging-robustness demonstration: gating on raw `cosine_dist` makes top-k *membership*
+age-independent, so recall cannot vary across rounds by construction. The residual decay
+effect lives entirely in *ranking* — decay-only nDCG 0.603 vs baseline 0.824 — which the
+reorder still produces.
 
 ### 8.3 Importance (A7) — a clean ranking win (clearest post-fix)
 
@@ -530,8 +561,8 @@ across conditions (same seed 42).
 1. **Headline holds:** AMP ~2.5–3.0× under pressure at N=40, before **and** after the
    §4.5 fix (§8.1) — the fix does not contaminate it.
 2. **§4.5 decay bug: found → FIXED → validated** (§4.5, §8.2). Pre-fix collapse
-   (r5 ≈ 0.13) → post-fix flat curves (0.925–1.000); survival test + green 22-test
-   store suite. Decay is now the documented mild reorder, zero recall loss.
+   (r5 ≈ 0.13) → post-fix flat curves (0.925–1.000); survival test + green store suite
+   (16 store.rs tests). Decay is now the documented mild reorder, zero recall loss.
 3. **Importance:** a clean ranking win, clearest post-fix (recall@10=1.000, nDCG 0.811;
    §8.3); production create-API gap (§4.6) unchanged.
 4. **RMK:** **structurally unmeasurable** by this benchmark — 0 episodes recorded,
@@ -564,6 +595,13 @@ across conditions (same seed 42).
 - **Sequencing:** runs **after** the decay re-run (PID-tracked) to avoid bench-stack
   collision. Result lands here (§8.7) and in §8.4's verdict.
 
+**Anti-cherry-pick disclosure (harness commit).** The `amp-rmk` condition-registration
+(one line in `run_longitudinal.py`) was committed **post-run** (`bcbed06`); the A11
+protocol and values (cooldown 60 s, min-episodes 5) were pre-registered at `59c8105`
+(06:57), before the amp-rmk result (09:29). We state this plainly rather than hide the
+gap: the protocol and values were fixed before the run, but the one-line condition label
+itself was not separately committed until afterward.
+
 **Result (ran exactly once, as pledged — no cooldown was re-tried).** The compressed
 cadence was verified live in-kernel (`cooldown_secs=60 min_episodes=5 epsilon=0.1`) and
 RMK's workers ran. Rounds ranking was byte-identical to `amp-only` (recall@10 = 1.000,
@@ -584,3 +622,11 @@ RMK verdict requires a proxy-path benchmark. Carried into §8.4.
 and `run_pubscale.py` (scaled §8). Raw per-condition `longitudinal_quality.json`
 artifacts were produced with real OpenAI embeddings; re-run with the committed SQL +
 seed 42 to reproduce the aging.*
+
+**Reproduction note (kernel tests).** The `store.rs` retrieval suite (incl.
+`stale_relevant_memory_survives_decay_filter`, §4.5) is green **only via the Docker
+`rust:1.96-slim` path** on this host: `docker run --rm --network container:aeonbench-postgres
+-v <clone>:/app -w /app -e DATABASE_URL=postgres://memoryos:memoryos_secret@localhost:5432/memoryos
+rust:1.96-slim bash -lc "cargo test memory::store::"`. **Native `cargo test` cannot link
+here** — the host's MSVC toolchain is missing the Windows 10/11 SDK (`LNK1181: cannot
+open kernel32.lib`); this is a host-environment limitation, not a code issue.
