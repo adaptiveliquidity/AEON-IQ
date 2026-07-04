@@ -66,6 +66,7 @@ findings at the smoke stage and are logged here for the anti-cherry-pick trail.
 | A8 | Dedup **disabled** during seeding (`DEDUP_THRESHOLD=0`) | Shipped default `0.05` skips an insert within cosine-distance 0.05 of an existing live memory and returns the **existing** id, silently collapsing near-duplicate turns (N turns → < N memories) and potentially merging a gold turn away. Off ⇒ faithful **1 turn = 1 distinct retrievable memory**. Analogous to the existing `ARCHIVAL_INTERVAL_HOURS=0`. Verified 1:1 (100/100). The smoke run did **not** disable it — see §4.7. | scaled-run prep |
 | A9 | Scaled run uses `MEMORYOS_ROLE=all` with **RMK ON** (reverses A5) | The smoke's A5 proxy-role dodge disabled RMK. The deadlock is now fixed properly (per-agent advisory lock serializing the AMP sweep vs harness SQL; §4.8), so the scaled run exercises RMK's learning loop for real. Probe: 112 forced sweeps + 110 aging txns + a real background sweep → zero new deadlocks. | scaled-run prep |
 | A10 | **Rounds are a repeated measure**: re-score the SAME unit(s) every round after each clock advance (was: partition an agent's units across rounds) | With ~1 question per LongMemEval record the partition design leaves rounds 2..R **empty at any N** (not a truncation artifact) → no aging curve. Re-scoring the same question at seed-age + (r−1)·6 d yields a genuine **recall-vs-age curve**. **These are repeated measures on a corpus aging underneath the query, NOT independent per-round samples** — any trend analysis must treat them as such (the same unit recurs each round). | scaled-run prep |
+| A11 | **RMK compressed learning cadence** for the RMK-isolation test: env-wire `RMK_UPDATE_COOLDOWN_SECS` + `RMK_MIN_EPISODES_BEFORE_UPDATE` (previously **not** wired — only `RMK_ENABLED` was; §4.9) and lock **cooldown = 60 s, min-episodes = 5** (shipped: 3600 s / 20 hardcoded). Compresses RMK's ~1 h update cadence so its learning loop completes many update cycles within one bench run — exactly as the timeline is SQL-injected to test decay. Disclosed in the paper as a compressed cadence, not the shipped real-time one. **Isolation:** compare `amp-rmk` (amp-only toggles + RMK on) vs `amp-only` (identical, RMK off) — only `RMK_ENABLED` differs, so any delta is RMK's and nothing else's. Deviates from the literal "aeon-full vs amp-only" (which is confounded by decay/importance/graph) to isolate RMK cleanly; AMP-on is required because RMK's policy only modulates AMP knobs (`adapter.rs`). **Run once; report helps / hurts / neutral as it lands.** | post-scaled, RMK-isolation prep |
 
 **Scaled run (2026-07-04):** untruncated `longmemeval_s` (drops A2), **N = 40**
 conversations, 5 conditions (baseline / decay-only / amp-only / aeon-full /
@@ -276,6 +277,20 @@ Probe (330 s, dedup/RMK on, `role=all`): 112 forced sweeps + 110 aging txns + on
 real autonomous background sweep → **zero** new `pg_stat_database.deadlocks`, zero
 errors. This is what lets A9 run RMK for real.
 
+### 4.9 Kernel: RMK tuning knobs were not env-wired (fixed for A11)
+`Config::from_env` (`src/config.rs`) built `rmk_config: RmkConfig { enabled:
+<RMK_ENABLED>, ..Default::default() }` — only the on/off switch read the
+environment; `update_cooldown_secs` (3600 s), `min_episodes_before_update` (20)
+and `epsilon` (0.1) were **hardcoded defaults**. The design doc's compressed-run
+knob `RMK_UPDATE_COOLDOWN_SECS=1` therefore had **no effect** — setting it would
+silently leave RMK at the shipped 1 h / 20-episode cadence (same inert-knob class
+as §4.6's dropped `importance` field). Surfaced 2026-07-04 while designing the A11
+compressed-cadence test; **without wiring these, the "compressed RMK" run would
+have been a false compression reported as a real verdict.** Fix: env-wire
+`RMK_UPDATE_COOLDOWN_SECS` + `RMK_MIN_EPISODES_BEFORE_UPDATE`, committed before the
+A11 run. (This is also a genuine product improvement — the `RmkConfig` fields exist
+to be configurable; they simply were not read from the environment.)
+
 ---
 
 ## 5. What this means for AEON-IQ's claims
@@ -414,8 +429,9 @@ amp-only (RMK off) **0.876** — within noise; and aeon-full's rounds are domina
 the decay collapse, not RMK. **Caveat (honest, not spin):** RMK's policy-update cooldown
 is ~1 h, but each condition's harness wall-clock was tens of minutes (baseline 16 min),
 so its learning loop had time for at most ~1 update cycle — plausibly too few episodes
-to show learning. Verdict: **no measurable RMK benefit here, likely under-exercised;** a
-longer-runtime RMK re-run is under consideration to turn this into a firm verdict.
+to show learning. Verdict: **no measurable RMK benefit here, likely under-exercised.**
+This "unfinished sentence" is resolved by the **A11 compressed-cadence isolation test
+(§8.7)** — run once, reporting helps / hurts / neutral as it lands.
 
 ### 8.5 Run health
 
@@ -438,8 +454,34 @@ across conditions (same seed 42).
    the corrected curve will be measured against.
 3. **Importance:** small real ranking gain when scores vary (§8.3); production gap
    (§4.6) unchanged.
-4. **RMK:** ran for real, no measurable lift, likely under-exercised (§8.4); optional
-   longer re-run pending.
+4. **RMK:** ran for real, no measurable lift, likely under-exercised (§8.4); the A11
+   compressed-cadence isolation test (§8.7) will turn this into a firm verdict.
+
+### 8.7 RMK compressed-cadence isolation test (A11) — pre-registered, results pending
+
+**Locked before the run** (anti-cherry-pick, committed ahead of any RMK result):
+
+- **Compressed cadence:** `RMK_UPDATE_COOLDOWN_SECS = 60`, `RMK_MIN_EPISODES_BEFORE_UPDATE
+  = 5` (shipped: 3600 s / 20). These are env-wired per §4.9 (they were phantom knobs
+  before). Rationale: RMK's ~1 h / 20-episode shipped cadence cannot complete a
+  learning trajectory inside a bench run; 60 s / 5 lets it run many update cycles —
+  the same "compress an impractical shipped timescale, disclosed" logic used for the
+  SQL-injected timeline (decay) and importance. Disclosed in the paper as a compressed
+  cadence, **not** the shipped real-time one.
+- **Isolation (only `RMK_ENABLED` differs):** `amp-rmk` = amp-only toggles
+  (`AMP_ENABLED=true`, decay 0, importance 0, graph off) **+ RMK on**, vs the existing
+  `amp-only` (RMK off, decay 0 ⇒ unaffected by the §4.5 fix and by RMK cooldown). Any
+  delta is attributable to RMK's learning loop and nothing else. AMP-on is required
+  because RMK's policy only modulates AMP knobs — pressure a/b, controller kp/ki,
+  graph-bonus weight, retrieval threshold (`src/memory/rmk/adapter.rs`).
+- **Metrics watched:** pressure `gold_retention` / nDCG (RMK's primary lever is AMP
+  eviction) and rounds nDCG / MRR (recall is at ceiling, so watch ranking not recall).
+- **Guardrail:** run **once** at the locked value; report **helps / hurts / neutral**
+  exactly as it lands. No re-running with different cooldowns until it "looks good" —
+  that would be tuning. "Neutral" or "slightly hurts" is a clean, publishable verdict
+  and strictly better than "under-exercised."
+- **Sequencing:** runs **after** the decay re-run (PID-tracked) to avoid bench-stack
+  collision. Result lands here (§8.7) and in §8.4's verdict.
 
 ---
 
