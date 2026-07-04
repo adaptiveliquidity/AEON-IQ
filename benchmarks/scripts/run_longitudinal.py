@@ -154,6 +154,11 @@ CONDITIONS = (
     "cosine-baseline",
     "decay-only",
     "amp-only",
+    # amp-rmk (A11): amp-only kernel toggles + RMK ON at compressed cadence.  A pure
+    # RMK-isolation arm — same env as amp-only except RMK_ENABLED=true — so any delta
+    # vs amp-only is RMK's learning loop alone.  Runs the pressure phase (below); does
+    # NOT trigger importance injection (that is keyed on aeon-full-importance only).
+    "amp-rmk",
     "aeon-full",
     "aeon-full-importance",
 )
@@ -1161,6 +1166,7 @@ def main() -> int:
             # ── PP: pressure + eviction comparison (AMP vs LRU vs random) ──
             run_pressure = (not args.skip_pressure) and args.condition in (
                 "amp-only",
+                "amp-rmk",
                 "aeon-full",
                 "aeon-full-importance",
             )
