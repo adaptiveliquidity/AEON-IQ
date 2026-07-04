@@ -19,13 +19,24 @@ retrieval bug and a benchmark-metric artifact we found in our *own* harness.
 The original seed-then-query benchmark showed `aeon-full == cosine-baseline`
 because it never aged memories or applied pressure. This harness manufactures
 history (SQL-injected timelines, rounds, feedback, memory pressure) so the
-differentiators are actually exercised. At smoke scale we find: **(a)** on
-retrieval *ranking* over an aged corpus, decay / importance / graph / RMK show **no
-statistically meaningful lift** at n = 3 (differences are single-query noise); and
-**(b)** under memory pressure, **AMP eviction retains ~81–95 % of gold vs ~38–50 %
-for LRU and ~39–47 % for random** — a real, consistent ~2× advantage across every
-agent. Getting to those honest numbers required fixing four harness bugs and one
-metric artifact (§4), one of which had made AMP look like a *perfect* 100 %.
+differentiators are actually exercised. At smoke scale we find:
+
+- **(a) Ranking layer — provisional, n = 3, noisy:** over an aged corpus, decay /
+  importance / graph show **no *measurable* lift** at this scale, but the
+  differences are single-query noise — a **provisional observation, not a
+  conclusion.**
+- **(b) RMK — NOT TESTED:** RMK's learning loop was **off** for this run (background
+  workers disabled under `MEMORYOS_ROLE=proxy`, see §6/A5). RMK is an **open
+  question**, *not* a negative finding. Do not read "no RMK lift" anywhere in this
+  doc.
+- **(c) Pressure layer — the one robust result (still smoke-scale):** under memory
+  pressure, **AMP eviction retains ~81–95 % of gold vs ~38–50 % for LRU and ~39–47 %
+  for random** — a consistent ~2× advantage across **every** agent. Robust in the
+  sense that it holds on all agents with a large margin, but still n = 3 and
+  **pending the publication-scale run.**
+
+Getting to these honest numbers required fixing four harness bugs and one metric
+artifact (§4), one of which had made AMP look like a *perfect* 100 %.
 
 ---
 
@@ -71,8 +82,10 @@ real OpenAI `text-embedding-3-small`, kernel built from this branch.
 by 0.333. `decay-only` scoring 1.000 and `aeon-full` scoring 0.667 differ by a
 single query. `amp-only == baseline` exactly (expected: with decay/importance/graph
 off, AMP does nothing at retrieval time — it only acts under pressure). **No
-condition shows a defensible ranking lift or drag over baseline at this scale.**
-The `aeon-full` numbers here exclude live RMK learning (A5).
+condition shows a *measurable* ranking lift or drag over baseline at this scale —
+a provisional smoke observation, not a conclusion.** These rows also **do not test
+RMK**: its learning loop was off (A5), so its column here is RMK-*absent*, not
+RMK-negative.
 
 ### 3.2 Memory pressure (eviction) — the robust result
 
@@ -162,13 +175,20 @@ removal manifests at larger staleness/scale.
 
 ## 5. What this means for AEON-IQ's claims
 
-- **Defensible now:** *Under memory pressure, AMP's adaptive eviction preserves
-  substantially more task-relevant memory than LRU or random* (~1.7–2.2× at smoke
-  scale, consistent across agents). This is the headline worth pursuing.
-- **Not supported (yet):** any claim that decay / importance / graph / RMK improves
-  retrieval *ranking*. At n = 3 they are within noise, and in the pressure phase
-  decay/importance mildly *reduce* gold survival.
-- **Do not claim:** AMP "retains 100 % of gold" (artifact), PI-controller
+- **The one robust result (still smoke-scale):** *Under memory pressure, AMP's
+  adaptive eviction preserves substantially more task-relevant memory than LRU or
+  random* (~1.7–2.2×, consistent across every agent). This is the headline worth
+  pursuing — but it is **still n = 3 and must be confirmed by the publication-scale
+  run** before it is stated as a result.
+- **Provisional only (n = 3, noisy):** no *measurable* ranking lift from decay /
+  importance / graph. This is a **provisional observation, not a conclusion** — at
+  n = 3 a single query moves recall@1 by 0.333. In the pressure phase decay /
+  importance mildly *reduce* gold survival; that too is provisional at this scale.
+- **UNTESTED — RMK:** RMK's learning loop did not run (proxy role, §6/A5). We have
+  **no data** on whether RMK helps or hurts. This is an **open question**, *not* a
+  negative finding. Do not write "no RMK lift."
+- **Do not claim:** AMP "retains 100 % of gold" (artifact), any RMK effect
+  (untested), a ranking *conclusion* (provisional, n = 3), PI-controller
   "convergence" (didn't), or any longitudinal round-over-round trend (LongMemEval
   has one question per record, so only round 1 is scored — see §6).
 
@@ -181,10 +201,11 @@ removal manifests at larger staleness/scale.
   large margin — still n = 3, still smoke.
 - **Truncated haystack** (A2): ~139 turns/agent, not the full ~492. Relative
   comparisons hold; absolute difficulty is easier than a full run.
-- **Background workers off** (`MEMORYOS_ROLE=proxy`, A5): **RMK policy learning and
+- **RMK was NOT tested** (`MEMORYOS_ROLE=proxy`, A5): **RMK policy learning and
   co-access edge decay did not run.** `aeon-full`/`aeon-full-importance` here reflect
-  the retrieval-time RMK adapter with a *default* policy — not a learned one. The RMK
-  mechanism is essentially untested for lift.
+  the retrieval-time RMK adapter with a *default* (unlearned) policy. We have **zero
+  data** on RMK's effect. This is an **open question**, and nothing in this doc may
+  be read as a "no RMK lift" / negative RMK finding.
 - **One question per record:** rounds advance the simulated clock but only round 1
   scores a query per agent, so the intended round-over-round *trend* is not measured;
   what §3.1 measures is retrieval over a 0–30-day-aged corpus, scored once.
