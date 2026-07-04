@@ -70,6 +70,36 @@ Decay stays at the pre-registered **configured** value `MEMORY_DECAY_RATE=0.03`,
 decay," not a shipped default). AMP uses shipped defaults (target ≈ 1000 hardcoded;
 no tuning PR).
 
+### 2.1 Pre-result expectation: ranking/aging is near-ceiling (logged before results)
+
+Recorded **before** the scaled run completes, from condition 1 (`cosine-baseline`,
+the first to finish): at N=40 on untruncated `longmemeval_s`, the **baseline is
+already near the recall ceiling** — recall@10 = 1.00, recall@1 = 0.90, recall@5 =
+1.00, with a **flat round_trend** (rounds 1–5 identical). Consequences we expect,
+stated now so they are not post-hoc excuses:
+
+- **The rounds-ranking comparison will likely show little separation** between
+  conditions on recall, because there is almost no recall headroom for decay /
+  importance / graph to recover — gold is nearly always already in the top-k.
+  This is **dataset difficulty (haystack ≈ 490 turns/agent), not a sample-size
+  limitation** — more agents cannot manufacture headroom. MRR/nDCG (baseline
+  0.936 / 0.824) retain some room; watch those, not recall@k, for any ranking
+  signal.
+- **A flat recall-vs-age curve (A10) is the mathematically-expected default**:
+  `advance_clock` ages every live memory uniformly, and a uniform age shift scales
+  every candidate's decay factor by the *same* constant → ranking is invariant.
+  Decay can only move ranking when memories age at *different* rates (e.g. access
+  refreshes `last_accessed_at` for retrieved ones) or when the §4.5 filter pushes
+  a memory past the distance threshold. So "the aging curve is flat / aeon-full
+  tracks baseline" is a **predicted honest outcome**, not a failure to hide.
+
+**Where the real statistical value is:** the **pressure phase (AMP vs LRU vs
+random)** — its own SQL-seeded distractor corpus, independent of haystack size,
+with 40 per-agent `gold_retention` samples — and the **A10 recall-vs-age curve**
+as an honest test of aging even if it lands flat. Lead with AMP-under-pressure;
+report ranking/aging/RMK/importance straight, "near-ceiling, little separation"
+included where true.
+
 ---
 
 ## 3. Results
