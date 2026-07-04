@@ -4,10 +4,13 @@
 > completed 2026-07-04 — see [§8](#8-scaled-publication-run-n40-2026-07-04).**
 > Headline confirmed at scale: **AMP retains ~0.88–0.91 of gold under pressure vs
 > ~0.27–0.33 for LRU/random (~2.7–3.0×)**. The stress test also **confirmed the
-> §4.5 decay-filter bug is severe** (configured decay collapses recall as memory
-> ages: r1 ~0.95 → r5 ~0.13). Those decay numbers are the **pre-fix** product; a
-> standalone §4.5 fix + re-run of the three decay conditions is in progress, after
-> which §8 will carry the corrected curve. §§1–7 below are the earlier smoke record.
+> §4.5 decay-filter bug is severe** (configured decay collapsed recall as memory
+> ages: r1 ~0.95 → r5 ~0.13). That bug was then **fixed and validated** (commit
+> `49cd083` + survival test + green 22-test suite + clean N=40 re-run — §8.2 carries
+> the before/after curves), and the AMP headline was **re-confirmed post-fix**
+> (0.876–0.903). RMK was found **structurally unmeasurable** by this retrieval-only
+> benchmark (0 episodes recorded — its learning is chat-completion-path only, §4.10 /
+> §8.4). §§1–7 below are the earlier smoke record.
 
 **Status: smoke-scale (n = 3) in §§1–7; scaled N=40 in §8.** The smoke numbers are a
 go/no-go and mechanism-sanity pass, **not** publication-grade. See
@@ -211,7 +214,7 @@ toward AMP `active_count` (pressure) but sit at cosine distance ≈ 0.98 (> the 
 ceiling) so they are never retrieval candidates. `gold_retention` is the primary
 pressure metric; post-eviction recall is over real memories only.
 
-### 4.5 Kernel: decay filters below threshold instead of only re-ranking (CONFIRMED SEVERE at scale; fix in progress)
+### 4.5 Kernel: decay filters below threshold instead of only re-ranking (CONFIRMED SEVERE at scale; FIXED + validated)
 `src/memory/store.rs` applies decay to the distance that is then compared to the
 threshold (`WHERE cosine_dist·exp(rate·days_stale)·(1+…) < threshold`), so a
 sufficiently-stale memory is **removed** from results, not just down-ranked — even if
@@ -231,13 +234,21 @@ signature of **removal, not demotion** — aged gold crosses the distance ceilin
 is dropped from the candidate set entirely. So the effect is not a mild drag: **as
 shipped-configured, decay actively destroys recall as memory ages.**
 
-**Decision (updated 2026-07-04): fix it.** Now warranted by hard evidence, being
-implemented as a standalone product change — the threshold gates **raw** cosine
-relevance, decay only reorders candidates already inside the ceiling (matching the
-`decay_reorders_stale_memories` intent) — on its own commit with a survival test
-proving aged gold is retained. The §8.2 decay curve is therefore the **pre-fix**
-product; the three decay conditions (decay-only, aeon-full, aeon-full-importance) are
-being re-run after the fix, and the corrected curve will replace it in §8.
+**Decision (2026-07-04): FIXED.** Standalone product change (commit `49cd083`): the
+threshold now gates **raw** `cosine_dist` (relevance); decay/importance keep
+`ORDER BY distance` so they only reorder candidates already inside the ceiling
+(matching the `decay_reorders_stale_memories` intent). A relevant-but-stale memory is
+never dropped.
+
+**Validated three ways:** (1) new unit test `stale_relevant_memory_survives_decay_filter`
+— a cosine-0.10 memory aged 60 days (decayed distance ≈ 2.0 ≫ the 0.80 threshold) is
+still retrieved post-fix, and decay still reorders it behind a fresher, less-relevant
+memory; pre-fix it was dropped. (2) full 22-test `memory::store` suite green (incl.
+`importance_weighted_retrieval`, `retrieval_plan_uses_hnsw_index`) — **no regression.**
+(3) re-run of the three decay conditions at N=40 (§8.2 "after"): the collapse is gone,
+curves are flat, decay is now the documented mild reorder. When `decay_rate = 0` the
+fix is a provable no-op (`exp(0)=1` ⇒ `cosine_dist == distance`), so baseline/amp-only
+are unaffected and were **not** re-run.
 
 ### 4.6 Kernel: create API silently ignores importance (DEFERRED known-issue)
 `CreateMemoryBody` (`src/api.rs`) accepts only `{content, memory_type}`; the
@@ -290,6 +301,26 @@ have been a false compression reported as a real verdict.** Fix: env-wire
 `RMK_UPDATE_COOLDOWN_SECS` + `RMK_MIN_EPISODES_BEFORE_UPDATE`, committed before the
 A11 run. (This is also a genuine product improvement — the `RmkConfig` fields exist
 to be configurable; they simply were not read from the environment.)
+
+### 4.10 Product/kernel: RMK learning is driven only by chat-completion traffic (KNOWN-ISSUE / future-work)
+`insert_episode` (`src/memory/rmk/store.rs`) — the function that records an RMK
+learning episode — has exactly **one** production caller: `src/proxy.rs:332`, inside
+the **chat-completion proxy**. Episodes are created only when memories are retrieved
+*through the LLM chat path* (inject memories → observe the interaction → compute
+reward → record an episode); the `/feedback` management endpoint updates AMP
+`utility_ema` but does **not** create RMK episodes. Consequence, confirmed empirically
+by the A11 run (§8.7): a **retrieval-only** workload records **zero** episodes
+(`rmk_episodes = 0`), so the learning loop never reaches `min_episodes`, never writes
+a policy (`rmk_policies = 0`), and never learns — **regardless of cadence.**
+
+This is a real product fact worth recording independent of this benchmark:
+**RMK's online learning is exercised only by chat-completion traffic.** Any deployment
+or evaluation that reaches AEON-IQ via the management/retrieval APIs (not the chat
+proxy) gets RMK's *initial* policy and no adaptation. Same inert-by-path class as §4.6
+(importance create-API) and §4.9 (phantom knobs). **Not changed here.** Future work:
+either (a) record episodes on the retrieval/feedback path too, or (b) build a
+proxy-path (chat-completion) benchmark to measure RMK learning. Surfaced 2026-07-04 by
+the A11 isolation test.
 
 ---
 
@@ -359,11 +390,11 @@ off** (A8), importance **SQL-injected** gold=0.95 / non-gold=0.5 for the variant
 × ~490 turns). All amendments + the §4.6–§4.8 findings were committed **before** this
 run (anti-cherry-pick trail). All 5 conditions completed `status = ok`.
 
-**This section reports the run straight, exactly as it landed. Nothing was tuned. The
-decay result below is a *negative* finding for the mechanism as shipped-configured —
-the opposite of a flattering number — which is the whole point of the stress test.
-The §8.2 decay curve is the PRE-FIX product (see §4.5); it is being re-run after the
-decay fix and will be replaced by the corrected curve.**
+**This section reports the run straight, exactly as it landed. Nothing was tuned.**
+§8.2 keeps the **found-and-fixed arc** visible end-to-end: the PRE-FIX decay collapse
+(the *negative* finding that motivated the §4.5 fix — the opposite of a flattering
+number) **and** the CORRECTED post-fix curve side by side. The AMP headline (§8.1) was
+re-confirmed post-fix and is not contaminated by the decay change.
 
 ### 8.1 Memory pressure (eviction) — the robust result, confirmed at scale
 
@@ -383,9 +414,19 @@ comparators fall to ~0.27–0.33, so AMP's relative advantage *widens*. This is 
 headline, now at N=40. It is unaffected by the §4.5 decay bug (pressure is measured on
 its own SQL-seeded distractor corpus, not the aging haystack).
 
-### 8.2 Recall-vs-age curve (A10) — decay actively destroys recall (PRE-FIX; §4.5)
+**Post-fix confirmation (§4.5 fix did not contaminate the headline).** Re-running the
+decay conditions with the fix in place leaves AMP pressure retention intact: aeon-full
+**0.899** vs LRU 0.309 / random 0.330; aeon-full-importance **0.903** vs LRU 0.369 /
+random 0.330; plus the A11 `amp-rmk` arm **0.895** vs LRU 0.327 / random 0.347.
+Combined with the unchanged `amp-only` 0.876, **AMP holds at 0.876–0.903 (~2.5–3.0×)
+across every arm, before and after the fix** — the fix targets the retrieval threshold,
+which the pressure metric does not depend on.
 
-recall@10 by round (corpus ages ~6 d per round underneath a re-scored query):
+### 8.2 Recall-vs-age curve (A10) — decay bug found → fixed (before / after; §4.5)
+
+**BEFORE the §4.5 fix** — recall@10 by round (corpus ages ~6 d per round underneath a
+re-scored query). This is the negative finding that motivated the fix; kept visible as
+the "before" half of the found-and-fixed arc:
 
 | condition | r1 | r2 | r3 | r4 | r5 |
 |-----------|:--:|:--:|:--:|:--:|:--:|
@@ -405,33 +446,71 @@ condition holds at 1.0.** In every collapsed row `recall@5 == recall@10` — the
 **removed** from the candidate set (§4.5 filter), not merely demoted. This is the
 §4.5 bug manifesting at realistic accumulated aging, and it **overturns the smoke's
 "mild drag, zero recall loss"** read (the smoke only scored round 1, so aging never
-accumulated). Honest verdict: **shipped-configured decay is harmful, not neutral,
-under aging.** Fix + re-run in progress (§4.5).
+accumulated). Honest verdict on the pre-fix product: **shipped-configured decay is
+harmful, not neutral, under aging.**
 
-### 8.3 Importance (A7) — a small but real ranking gain
+**AFTER the §4.5 fix** — the three decay conditions re-run at N=40, seed 42, identical
+config, with the fixed kernel (threshold gates raw relevance; decay reorders only).
+recall@10 by round:
+
+| condition | r1 | r2 | r3 | r4 | r5 | ndcg@10 |
+|-----------|:--:|:--:|:--:|:--:|:--:|:-------:|
+| cosine-baseline (decay 0, not re-run — provable no-op) | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 0.824 |
+| amp-only (decay 0, not re-run — provable no-op) | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 0.823 |
+| **decay-only** (decay 0.03) | 0.950 | 0.950 | 0.950 | 0.950 | **0.950** | 0.603 |
+| **aeon-full** (decay 0.03) | 0.925 | 0.925 | 0.925 | 0.925 | **0.925** | 0.600 |
+| **aeon-full-importance** (decay 0.03) | 1.000 | 1.000 | 1.000 | 1.000 | **1.000** | 0.811 |
+
+**The collapse is gone.** Every curve is flat across rounds (the §2.1
+mathematically-expected default: uniform aging scales all decayed distances equally, so
+ranking is invariant, and the threshold now gates age-independent raw cosine so
+membership is invariant too). Decay is now what it was always documented to be — a
+**mild ranking reorder** (decay-only nDCG 0.603 vs baseline 0.824; recall 0.950,
+occasionally pushing gold below rank 10 but **never removing it**), i.e. the "mild drag,
+zero recall loss" the smoke *wrongly assumed* is now actually true. Validated by the
+`stale_relevant_memory_survives_decay_filter` unit test and a green 22-test store suite
+(§4.5). See §8.3 for why the importance variant recovers all the way to recall@10=1.000.
+
+### 8.3 Importance (A7) — a clean ranking win (clearest post-fix)
 
 With importance actually varying (gold 0.95 / non-gold 0.5, SQL-injected per A7 since
-the create API drops the field — §4.6), the importance variant pins
-`mean_first_gold_rank = 1.000` in **every** round (gold is always rank-1 when present,
-vs aeon-full's 1.13–1.29), and shows higher pressure-phase nDCG (**0.722 vs aeon-full
-0.580**) and retention (0.911 vs 0.888). So the **weighting math does help ranking
-quality when scores differ** — a modest, genuine positive. Recall still collapses
-across rounds with the others because decay filters the same aged gold out regardless
-of its importance. The §4.6 product gap stands: importance is inert in production until
-the create API accepts the field.
+the create API drops the field — §4.6), the weighting math helps in both runs; the
+**post-fix** run makes it unmistakable. Post-fix, the importance variant is the **best
+of the three decay conditions**: recall@10 = **1.000** (vs decay-only 0.950 / aeon-full
+0.925), nDCG@10 = **0.811** (vs 0.603 / 0.600 — near the 0.824 baseline), with gold
+pinned to `mean_first_gold_rank ≈ 1.0` in every round. The mechanism: non-gold takes a
+larger distance penalty (`1 + 0.5·(1−0.5)=1.25`) than gold (`1 + 0.5·(1−0.95)=1.025`),
+so gold is pulled up and recovers the recall the plain decay conditions leave on the
+table. Under pressure it also edges the others (retention 0.903, nDCG 0.820). This win
+was **masked pre-fix** — decay's removal filter destroyed gold regardless of importance;
+only after the §4.5 fix does the weighting benefit show cleanly. The §4.6 product gap
+stands: importance is inert in production until the create API accepts the field.
 
-### 8.4 RMK — exercised for real, no measurable lift (likely under-exercised)
+### 8.4 RMK — structurally unmeasurable by this benchmark (0 episodes recorded)
 
-RMK genuinely ran this time (`MEMORYOS_ROLE=all`, background workers on, advisory-lock
-fix from §4.8 held — zero deadlocks), so this is a real "ran, no measurable lift,"
-**not** the smoke's "untested." Evidence: aeon-full (RMK on) AMP retention **0.888** ≈
-amp-only (RMK off) **0.876** — within noise; and aeon-full's rounds are dominated by
-the decay collapse, not RMK. **Caveat (honest, not spin):** RMK's policy-update cooldown
-is ~1 h, but each condition's harness wall-clock was tens of minutes (baseline 16 min),
-so its learning loop had time for at most ~1 update cycle — plausibly too few episodes
-to show learning. Verdict: **no measurable RMK benefit here, likely under-exercised.**
-This "unfinished sentence" is resolved by the **A11 compressed-cadence isolation test
-(§8.7)** — run once, reporting helps / hurts / neutral as it lands.
+The A11 isolation test (§8.7) resolves the RMK question — but **not** as "neutral" or
+"no lift." The honest verdict is that RMK's learning loop is **structurally
+unexercisable by a retrieval-only benchmark:** it recorded **zero episodes**, so it
+never learned, so there is nothing to measure.
+
+- The compressed cadence was wired and verified live in-kernel (`cooldown_secs=60
+  min_episodes=5 epsilon=0.1`), and RMK's workers ran (role=all, §4.8 lock held).
+- Yet after the run, **`rmk_episodes = 0` and `rmk_policies = 0`.** With no episodes,
+  `min_episodes=5` is never reached; no policy is ever created; no learning occurs — at
+  any cadence.
+- **Root cause (§4.10):** the only production caller of `insert_episode` is the
+  **chat-completion proxy** (`src/proxy.rs:332`). The semantic benchmark seeds/queries
+  via the management + retrieval APIs and never traverses the proxy, so no episodes are
+  recorded. The `/feedback` endpoint updates AMP `utility_ema`, not RMK episodes.
+- The tiny pressure blip in the isolation run (amp-rmk 0.895 vs amp-only 0.876) is
+  **noise, not learning** — the LRU/random comparators shifted too (0.327/0.347 vs
+  0.272/0.307) and there was no policy in the DB to apply.
+
+**Verdict: RMK learning is not measurable here — 0 episodes recorded — NOT "no lift."**
+The distinction is the honest one: we did not test RMK and find it neutral; we found
+that this class of benchmark cannot drive it. A real verdict requires a proxy-path
+(chat-completion) benchmark (§4.10 future work). RMK is **not** claimed as a second
+pillar on this evidence.
 
 ### 8.5 Run health
 
@@ -448,16 +527,18 @@ across conditions (same seed 42).
 
 ### 8.6 What this changes
 
-1. **Headline holds and strengthens:** AMP ~2.7–3.0× under pressure at N=40 (§8.1).
-2. **§4.5 decay bug promoted latent → confirmed-severe and slated for a fix** (§4.5),
-   with the three decay conditions re-running post-fix; §8.2 is the pre-fix baseline
-   the corrected curve will be measured against.
-3. **Importance:** small real ranking gain when scores vary (§8.3); production gap
-   (§4.6) unchanged.
-4. **RMK:** ran for real, no measurable lift, likely under-exercised (§8.4); the A11
-   compressed-cadence isolation test (§8.7) will turn this into a firm verdict.
+1. **Headline holds:** AMP ~2.5–3.0× under pressure at N=40, before **and** after the
+   §4.5 fix (§8.1) — the fix does not contaminate it.
+2. **§4.5 decay bug: found → FIXED → validated** (§4.5, §8.2). Pre-fix collapse
+   (r5 ≈ 0.13) → post-fix flat curves (0.925–1.000); survival test + green 22-test
+   store suite. Decay is now the documented mild reorder, zero recall loss.
+3. **Importance:** a clean ranking win, clearest post-fix (recall@10=1.000, nDCG 0.811;
+   §8.3); production create-API gap (§4.6) unchanged.
+4. **RMK:** **structurally unmeasurable** by this benchmark — 0 episodes recorded,
+   learning is chat-path-only (§8.4, §4.10). Not "neutral," not a second pillar; a real
+   verdict needs a proxy-path benchmark.
 
-### 8.7 RMK compressed-cadence isolation test (A11) — pre-registered, results pending
+### 8.7 RMK compressed-cadence isolation test (A11) — pre-registration + result
 
 **Locked before the run** (anti-cherry-pick, committed ahead of any RMK result):
 
@@ -482,6 +563,20 @@ across conditions (same seed 42).
   and strictly better than "under-exercised."
 - **Sequencing:** runs **after** the decay re-run (PID-tracked) to avoid bench-stack
   collision. Result lands here (§8.7) and in §8.4's verdict.
+
+**Result (ran exactly once, as pledged — no cooldown was re-tried).** The compressed
+cadence was verified live in-kernel (`cooldown_secs=60 min_episodes=5 epsilon=0.1`) and
+RMK's workers ran. Rounds ranking was byte-identical to `amp-only` (recall@10 = 1.000,
+nDCG = 0.8234, MRR = 0.9363) — expected, since RMK modulates AMP *eviction*, not
+non-pressure retrieval. Under pressure, `amp-rmk` gold_retention **0.895** vs `amp-only`
+**0.876** (+1.9 pp), but the LRU/random comparators shifted too (0.327/0.347 vs
+0.272/0.307), so the delta is noise. **Decisive check:** after the run,
+**`rmk_episodes = 0` and `rmk_policies = 0`** — the learning loop recorded nothing and
+created no policy, so `min_episodes=5` was never reached and no learning happened.
+**Verdict: not "neutral" — structurally unmeasurable.** Episodes are recorded only on
+the chat-completion proxy path (`src/proxy.rs:332`), which a retrieval-only benchmark
+never traverses (§4.10). The compressed-cadence wiring is correct and reusable; a real
+RMK verdict requires a proxy-path benchmark. Carried into §8.4.
 
 ---
 
