@@ -1,8 +1,10 @@
 # Longitudinal Memory Benchmark — Design & Pre-Registration
 
-**Status:** pre-registration — EXECUTED at smoke scale (2026-07-04). What actually
-happened (results, amendments to this frozen protocol, and the bugs/artifacts found)
-lives in **[LONGITUDINAL_RESULTS.md](LONGITUDINAL_RESULTS.md)** (PR #42). See §12.
+**Status:** pre-registration — EXECUTED at smoke scale AND publication scale (N=40),
+both 2026-07-04. What actually happened (results, amendments to this frozen protocol,
+and the bugs/artifacts found) lives in **[LONGITUDINAL_RESULTS.md](LONGITUDINAL_RESULTS.md)**
+(PR #42). See §12 (smoke trail) and **§13 (scaled N=40 trail: amendments A6–A10,
+findings §4.6–§4.8, results, and the §4.5 decay-fix now in progress)**.
 **Purpose:** measure whether AEON-IQ's ranking/memory mechanisms (time-decay, importance,
 AMP co-access, AMP eviction, RMK feedback learning) produce a *measurable, mechanism-attributable*
 improvement over a pure-cosine baseline **when memories have history** — age, access patterns,
@@ -180,3 +182,67 @@ harness branch (PR #42). Quick trail so this doc is complete from either side:
   open question, not a negative finding.
 - **Next:** publication-scale run (≥30–50 conv, untruncated `_s`, RMK enabled with
   sweep serialization) in a fresh session.
+
+## 13. Scaled publication run (N=40, 2026-07-04) — amendments A6–A10, findings, results
+
+The publication run executed 2026-07-04: untruncated `longmemeval_s`, **N=40**, 5
+conditions, seed 42, RMK ON. Full numbers are in **RESULTS.md §8**; this section
+mirrors the *pre-registration trail* (amendments recorded before the numbers, and the
+kernel findings) so #41 is complete from either side.
+
+### 13a. Amendments A6–A10 (fixed values committed before the scaled numbers)
+
+| # | Amendment | Fixed value / reason |
+|---|-----------|----------------------|
+| A6 | Seeding parallelized (16 threads) | perf only; creates order-independent, aging applied post-seed by memory id (gold-blind). Integrity-verified serial == concurrent, byte-identical, 1:1 (100/100). |
+| A7 | Importance **SQL-injected** for the variant | **gold = 0.95, non-gold = 0.5** (fixed, non-gold **must** be < gold). Create API drops the `importance` field (§4.6), so the weighting math is tested by injection, exactly as decay is tested by injecting the timeline. |
+| A8 | Dedup **off** (`DEDUP_THRESHOLD=0`) | shipped default `0.05` collapses near-duplicate turns (returns existing id) → faithful 1 turn = 1 memory. Verified 1:1. Smoke ran with it ON (§4.7 confound). |
+| A9 | `MEMORYOS_ROLE=all`, **RMK ON** (reverses A5) | deadlock fixed properly (§4.8 advisory lock), so the scaled run exercises RMK for real. Probe: 112 sweeps + 110 aging txns + real bg sweep → 0 new deadlocks. |
+| A10 | **Rounds = repeated measure** | re-score the SAME unit each round on the aging corpus (was: partition units, which left rounds 2..R empty at any N). Yields a genuine recall-vs-age curve. Pre-registered caveat: uniform aging preserves ranking mathematically → a flat curve was the expected default *unless* the §4.5 filter triggers. |
+
+### 13b. Kernel findings §4.6–§4.8 (surfaced during scaled-run prep)
+
+- **§4.6 create API drops `importance`** → `importance_score` hardcoded 1.0 → importance
+  term inert in production for any `IMPORTANCE_BOOST_FACTOR`. Smoke's "no importance
+  lift" was structurally untestable, not disproven. Deferred known-issue (not changed
+  mid-benchmark); A7 tests the math by injection.
+- **§4.7 insert-time dedup collapsed the corpus** (default 0.05 → 100 turns became
+  87/78 rows, gold could merge away). Fixed for the scaled run by A8; smoke ran with it
+  on (unquantified confound).
+- **§4.8 AMP sweep vs harness SQL deadlock** fixed properly via a per-agent advisory
+  lock (`pg_advisory_xact_lock(AMP_SWEEP_LOCK_CLASSIFIER, hashtext(agent_id))`) held
+  across read→decide→write in `run_pressure_sweep_for_agent`, and taken by the harness
+  around its mutations — total lock order, deadlock-free. This is what enabled A9 (RMK
+  for real).
+
+### 13c. §4.5 decay-filter bug: latent → CONFIRMED SEVERE → being fixed
+
+The scaled A10 aging curve (RESULTS §8.2) overturned the smoke's benign read. Under
+accumulated aging, configured decay (`0.03`) **removes** aged gold below the distance
+threshold: every decay-on condition collapses recall@10 from ~0.90–0.98 (r1) to
+**~0.13–0.15 (r5)**, while decay-off conditions stay at 1.0; `recall@5 == recall@10` in
+collapsed rows confirms removal, not demotion. Decision updated from "don't fix" to
+**fix it** — threshold gates raw cosine relevance, decay reorders only (matching the
+`decay_reorders_stale_memories` intent) — on its own commit with a survival test. The
+three decay conditions (decay-only, aeon-full, aeon-full-importance) are being re-run
+post-fix; the §8.2 curve is retained as the pre-fix baseline.
+
+### 13d. Scaled results (see RESULTS §8 for full tables)
+
+- **AMP under pressure — robust win, confirmed at scale:** gold_retention 0.876–0.911
+  (AMP) vs 0.272–0.334 (LRU/random), ~2.7–3.0× across all three pressure conditions —
+  stronger than the smoke's ~2×.
+- **Decay — negative finding (pre-fix):** actively destroys recall under aging (§13c).
+- **Importance (A7) — small real ranking gain:** variant pins `mean_first_gold_rank=1.0`
+  every round, higher pressure nDCG (0.722 vs 0.580); recall still decay-limited.
+- **RMK — ran for real, no measurable lift, likely under-exercised:** role=all, no
+  deadlock; retention 0.888 (RMK on) ≈ 0.876 (off); ~1 h policy cooldown vs tens-of-min
+  runtime ⇒ ≤ ~1 learning cycle. Optional longer re-run pending.
+
+### 13e. Next
+
+1. **§4.5 decay fix** (standalone product commit + survival test), then re-run the three
+   decay conditions at N=40 — corrected curve replaces RESULTS §8.2.
+2. Optional RMK longer-runtime re-run to convert §13d's "under-exercised" into a firm
+   verdict.
+3. Hard-gate review of the corrected complete picture before any white-paper folding.
