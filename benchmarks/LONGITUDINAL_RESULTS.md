@@ -56,12 +56,14 @@ findings at the smoke stage and are logged here for the anti-cherry-pick trail.
 | A7 | Importance **SQL-injected** post-seed for the importance variant: **gold = 0.95, non-gold = 0.5** (fixed, pre-registered before the run) | The create API silently drops `importance` (`CreateMemoryBody` = {content, memory_type}) and hardcodes `importance_score = 1.0`, so the importance-weighting term is inert. Exactly as the **timeline** is SQL-injected to test decay (the API has no timestamp field either), importance is SQL-injected to test the weighting math. Non-gold **must** be < gold (retrieval penalty = 1 − score). See §4.6. | scaled-run prep |
 | A8 | Dedup **disabled** during seeding (`DEDUP_THRESHOLD=0`) | Shipped default `0.05` skips an insert within cosine-distance 0.05 of an existing live memory and returns the **existing** id, silently collapsing near-duplicate turns (N turns → < N memories) and potentially merging a gold turn away. Off ⇒ faithful **1 turn = 1 distinct retrievable memory**. Analogous to the existing `ARCHIVAL_INTERVAL_HOURS=0`. Verified 1:1 (100/100). The smoke run did **not** disable it — see §4.7. | scaled-run prep |
 | A9 | Scaled run uses `MEMORYOS_ROLE=all` with **RMK ON** (reverses A5) | The smoke's A5 proxy-role dodge disabled RMK. The deadlock is now fixed properly (per-agent advisory lock serializing the AMP sweep vs harness SQL; §4.8), so the scaled run exercises RMK's learning loop for real. Probe: 112 forced sweeps + 110 aging txns + a real background sweep → zero new deadlocks. | scaled-run prep |
+| A10 | **Rounds are a repeated measure**: re-score the SAME unit(s) every round after each clock advance (was: partition an agent's units across rounds) | With ~1 question per LongMemEval record the partition design leaves rounds 2..R **empty at any N** (not a truncation artifact) → no aging curve. Re-scoring the same question at seed-age + (r−1)·6 d yields a genuine **recall-vs-age curve**. **These are repeated measures on a corpus aging underneath the query, NOT independent per-round samples** — any trend analysis must treat them as such (the same unit recurs each round). | scaled-run prep |
 
 **Scaled run (2026-07-04):** untruncated `longmemeval_s` (drops A2), **N = 40**
 conversations, 5 conditions (baseline / decay-only / amp-only / aeon-full /
-aeon-full-importance), seed 42, corrected `gold_retention` (A4), **RMK ON** (A9).
-Amendments A6–A9 and the §4.6–§4.8 findings were committed **before** this run
-(code commit `2352c3b` + this doc) for the anti-cherry-pick trail.
+aeon-full-importance), seed 42, corrected `gold_retention` (A4), **RMK ON** (A9),
+**rounds = repeated measure** (A10). Amendments A6–A10 and the §4.6–§4.8 findings
+were committed **before** this run (code `2352c3b` + this doc) for the
+anti-cherry-pick trail.
 
 Decay stays at the pre-registered **configured** value `MEMORY_DECAY_RATE=0.03`,
 `IMPORTANCE_BOOST_FACTOR=0.5` (ships as 0.0 — write-ups must say "configured

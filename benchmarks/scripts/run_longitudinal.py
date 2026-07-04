@@ -804,13 +804,15 @@ def run_rounds(
     """P1..PR: per-round QA scoring + reinforcement + feedback + clock advance."""
     rows: list[dict] = []
     sim_day = 0.0
-    # Partition the QA units across rounds so each round measures a subset and the
-    # trend reflects accumulating history.  Deterministic contiguous slices.
-    per_round = max(1, len(units) // rounds)
+    # A10 (repeated-measurement design): re-score EVERY unit each round, so the
+    # SAME question is re-asked on a corpus that ages underneath it — round r
+    # measures recall at seed-age + (r-1)·delta_days, i.e. a genuine recall-vs-age
+    # curve.  The prior design partitioned an agent's units across rounds; with
+    # ~1 question per LongMemEval record that left rounds 2..R empty and produced
+    # NO aging curve at any N.  NB: these are NOT independent samples across rounds
+    # — the same unit recurs each round (a repeated measure on an aging corpus).
     for r in range(1, rounds + 1):
-        start = (r - 1) * per_round
-        subset = units[start : start + per_round] if r < rounds else units[start:]
-        for unit in subset:
+        for unit in units:
             gold_ids = {mapping[k] for k in unit["gold_keys"] if k in mapping}
             row, result_ids = score_unit(
                 "round", r, sim_day, dataset, unit, mapping, agent_id, condition,
