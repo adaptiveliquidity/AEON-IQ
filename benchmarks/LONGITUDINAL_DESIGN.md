@@ -199,7 +199,7 @@ kernel findings) so #41 is complete from either side.
 | A8 | Dedup **off** (`DEDUP_THRESHOLD=0`) | shipped default `0.05` collapses near-duplicate turns (returns existing id) → faithful 1 turn = 1 memory. Verified 1:1. Smoke ran with it ON (§4.7 confound). |
 | A9 | `MEMORYOS_ROLE=all`, **RMK ON** (reverses A5) | deadlock fixed properly (§4.8 advisory lock), so the scaled run exercises RMK for real. Probe: 112 sweeps + 110 aging txns + real bg sweep → 0 new deadlocks. |
 | A10 | **Rounds = repeated measure** | re-score the SAME unit each round on the aging corpus (was: partition units, which left rounds 2..R empty at any N). Yields a genuine recall-vs-age curve. Pre-registered caveat: uniform aging preserves ranking mathematically → a flat curve was the expected default *unless* the §4.5 filter triggers. |
-| A11 | **RMK compressed cadence** (post-scaled RMK-isolation test) | env-wire `RMK_UPDATE_COOLDOWN_SECS` + `RMK_MIN_EPISODES_BEFORE_UPDATE` (phantom knobs before, §4.9); lock **60 s / 5** (shipped 3600/20). Compresses RMK's shipped cadence, disclosed. Isolation: `amp-rmk` (amp-only toggles + RMK on) vs `amp-only` (RMK off) — only `RMK_ENABLED` differs. Run **once**, report as it lands. Committed before the RMK result. |
+| A11 | **RMK compressed cadence** (post-scaled RMK-isolation test) | env-wire `RMK_UPDATE_COOLDOWN_SECS` + `RMK_MIN_EPISODES_BEFORE_UPDATE` (phantom knobs before, §4.9); lock **60 s / 5** (shipped 3600/20). Compresses RMK's shipped cadence, disclosed. Isolation: `amp-rmk` (amp-only toggles + RMK on) vs `amp-only` (RMK off) — only `RMK_ENABLED` differs. Run **once**, report as it lands. Protocol/values/env-wiring pre-registered (`59c8105`/`89ef009`) before the result; the one-line amp-rmk condition label was committed **post-run** (`bcbed06`), disclosed in RESULTS §8.7. |
 
 ### 13b. Kernel findings §4.6–§4.8 (surfaced during scaled-run prep)
 
@@ -246,8 +246,9 @@ re-run. §8.2 keeps the pre-fix (before) and corrected (after) curves side by si
 ### 13d. Scaled results (see RESULTS §8 for full tables)
 
 - **AMP under pressure — the pillar, holds before AND after the fix:** gold_retention
-  **0.876–0.903** (AMP) vs 0.272–0.369 (LRU/random), ~2.5–3.0× across every pressure
-  arm (incl. the post-fix aeon-full 0.899 / importance 0.903 / amp-rmk 0.895). The §4.5
+  **0.876–0.911** (AMP; min = pre-fix amp-only, max = pre-fix importance) vs 0.272–0.369
+  (LRU/random), ~2.5–3.0× across every pressure arm (post-fix arms sit at 0.895–0.903:
+  aeon-full 0.899 / importance 0.903 / amp-rmk 0.895). The §4.5
   fix targets the retrieval threshold, which the pressure metric does not depend on — so
   the headline is **not contaminated** by the fix. **Precision caveats (RESULTS §8.1):**
   single seed (42) ⇒ no confidence intervals, the ratio is a one-run point estimate;
