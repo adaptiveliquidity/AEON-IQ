@@ -235,8 +235,10 @@ threshold: every decay-on condition collapsed recall@10 from ~0.90–0.98 (r1) t
 in collapsed rows confirmed removal, not demotion. **Fixed** (commit `49cd083`):
 threshold gates raw `cosine_dist`; decay/importance keep `ORDER BY distance` so they
 reorder only (matching the `decay_reorders_stale_memories` intent). Validated three
-ways: (1) new `stale_relevant_memory_survives_decay_filter` unit test, (2) green 22-test
-`memory::store` suite (no regression), (3) N=40 re-run of the three decay conditions —
+ways: (1) new `stale_relevant_memory_survives_decay_filter` unit test, (2) green store
+suite — 16 tests in `store.rs` (22 under the `cargo test memory::store::` filter, incl. 6
+extraction), no regression, run via Docker `rust:1.96-slim` (native cargo can't link on
+this host — missing Windows SDK), (3) N=40 re-run of the three decay conditions —
 collapse gone, flat curves (recall@10 0.925–1.000), decay now the documented mild
 reorder. `decay_rate=0` makes the fix a provable no-op, so baseline/amp-only were not
 re-run. §8.2 keeps the pre-fix (before) and corrected (after) curves side by side.
@@ -247,7 +249,15 @@ re-run. §8.2 keeps the pre-fix (before) and corrected (after) curves side by si
   **0.876–0.903** (AMP) vs 0.272–0.369 (LRU/random), ~2.5–3.0× across every pressure
   arm (incl. the post-fix aeon-full 0.899 / importance 0.903 / amp-rmk 0.895). The §4.5
   fix targets the retrieval threshold, which the pressure metric does not depend on — so
-  the headline is **not contaminated** by the fix.
+  the headline is **not contaminated** by the fix. **Precision caveats (RESULTS §8.1):**
+  single seed (42) ⇒ no confidence intervals, the ratio is a one-run point estimate;
+  AMP did **not** converge (`converged:false`, settled K ≈ 2× target — same-K comparison
+  still valid, but convergence must not be implied); the ratio depends on the
+  `pressure_multiplier=2.5` setpoint. Comparator drop smoke→scale is mechanistic:
+  gold-blind eviction retains gold ∝ surviving fraction, so the larger untruncated corpus
+  ⇒ higher eviction fraction ⇒ lower blind-dilution floor (~0.27–0.37). Setpoint-independent
+  claim: *AMP preserves gold near-fully while gold-blind eviction loses it in proportion to
+  the eviction fraction.*
 - **Decay — found → fixed:** pre-fix collapse (r5 ≈ 0.13) → post-fix flat curves
   (§13c). Decay is now the documented mild reorder, zero recall loss.
 - **Importance (A7) — a clean ranking win, clearest post-fix:** the variant is best of
