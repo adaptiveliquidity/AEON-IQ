@@ -2,10 +2,10 @@
 
 > **▶ Scaled publication run (N=40, seed 42, untruncated `longmemeval_s`, RMK ON)
 > completed 2026-07-04 — see [§8](#8-scaled-publication-run-n40-2026-07-04).**
-> Headline confirmed at scale: **AMP retains ~0.88–0.91 of gold under pressure vs
-> ~0.27–0.33 for LRU/random (~2.7–3.0×)**. The stress test also **confirmed the
-> §4.5 decay-filter bug is severe** (configured decay collapsed recall as memory
-> ages: r1 ~0.95 → r5 ~0.13). That bug was then **fixed and validated** (commit
+> Headline (single N=40 run, seed 42 — point estimate, see §8.1 caveats): **AMP retains
+> ~0.88–0.91 of gold under pressure vs ~0.27–0.37 for LRU/random (~2.5–3.0×)**. The
+> stress test also **confirmed the §4.5 decay-filter bug is severe** (configured decay
+> collapsed recall as memory ages: r1 ~0.90–0.98 → r5 ~0.13–0.15). That bug was then **fixed and validated** (commit
 > `49cd083` + survival test + green store suite (16 store.rs tests) + clean N=40 re-run — §8.2 carries
 > the before/after curves), and the AMP headline was **re-confirmed post-fix**
 > (0.876–0.903). RMK was found **structurally unmeasurable** by this retrieval-only
@@ -438,7 +438,7 @@ threshold, which the pressure metric does not depend on.
   is a point estimate, not a variance-bounded effect. "Consistent" here means "held on
   every arm and every agent in this run," **not** "across seeds."
 - **AMP did not converge.** The PI controller hit the 20-sweep cap with
-  `converged: false` (active ≈ 982 vs target 1000; settled K ≈ 2× target). The
+  `converged: false` (active ≈ 981 vs target 1000; settled K ≈ 2× target). The
   comparison stays valid — all three arms evict the *same* settled K — but
   "convergence" must not be implied.
 - **Ratio depends on the pressure setpoint** (`pressure_multiplier = 2.5`); a different
