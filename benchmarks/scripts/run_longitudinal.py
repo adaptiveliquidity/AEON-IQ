@@ -331,11 +331,62 @@ class PgExecutor:
             )
         return proc.stdout
 
+    @staticmethod
+    def _split_statements(sql: str) -> list[str]:
+        """Split a multi-statement SQL string on top-level ';'.
+
+        String/comment-aware so a ';' inside a single-quoted literal (e.g. the
+        distractor content) or a '--' line comment does NOT split a statement.
+        Handles the '' escape for embedded quotes.  Our .sql files use neither
+        dollar-quoting nor /* */ blocks, so this is sufficient and correct.
+        """
+        stmts: list[str] = []
+        buf: list[str] = []
+        i, n = 0, len(sql)
+        in_str = False
+        while i < n:
+            ch = sql[i]
+            if in_str:
+                buf.append(ch)
+                if ch == "'":
+                    if i + 1 < n and sql[i + 1] == "'":  # escaped ''
+                        buf.append(sql[i + 1])
+                        i += 2
+                        continue
+                    in_str = False
+                i += 1
+                continue
+            if ch == "'":
+                in_str = True
+                buf.append(ch)
+            elif ch == "-" and i + 1 < n and sql[i + 1] == "-":
+                j = sql.find("\n", i)
+                i = n if j == -1 else j
+                continue
+            elif ch == ";":
+                stmt = "".join(buf).strip()
+                if stmt:
+                    stmts.append(stmt)
+                buf = []
+            else:
+                buf.append(ch)
+            i += 1
+        tail = "".join(buf).strip()
+        if tail:
+            stmts.append(tail)
+        return stmts
+
     def execute_file(self, path: Path, params: dict[str, Any]) -> None:
         sql = path.read_text(encoding="utf-8")
-        # Files may hold multiple statements; DBAPI execute() handles multi-stmt
-        # for both psycopg backends, and psql -c handles it for docker.
-        self.execute(sql, params)
+        if self.backend in ("psycopg", "psycopg2"):
+            # psycopg cannot run multiple statements in one parameterized
+            # execute(); split (string/comment-aware) and run each with the same
+            # bound params (extra keys are ignored by the driver).
+            for stmt in self._split_statements(sql):
+                self.execute(stmt, params)
+        else:
+            # psql -c handles multi-statement files directly.
+            self.execute(sql, params)
 
     def close(self) -> None:
         if self._conn is not None:
@@ -776,13 +827,25 @@ def embedding_dim(pg: PgExecutor, agent_id: str, default: int = 1536) -> int:
 def gold_retention(
     pg: PgExecutor, agent_id: str, gold_ids: set[str]
 ) -> dict[str, Any]:
-    """Fraction of the given gold memory ids still live (archived_at IS NULL)."""
+    """Fraction of the given gold memory ids still RETRIEVABLE after eviction.
+
+    A gold memory counts as retained only if it satisfies the kernel's own
+    retrievability filter (src/memory/store.rs search_memories_impl):
+    ``archived_at IS NULL AND soft_evicted = FALSE``.  This is critical for a fair
+    AMP-vs-LRU/random comparison: AMP evicts by setting ``soft_evicted = TRUE``
+    (never touching archived_at), while the LRU/random comparators set
+    ``archived_at``.  Checking archived_at alone would make AMP's evictions
+    invisible and pin its retention at ~1.0 by construction — a metric artifact,
+    not a result (found 2026-07-04 when AMP scored a perfect 1.0 on every agent
+    despite having soft-evicted real memories).
+    """
     if not gold_ids:
         return {"gold_total": 0, "gold_kept": 0, "retention": None}
     id_list = ",".join(f"'{g}'" for g in gold_ids)
     kept = pg.scalar(
         f"SELECT COUNT(*)::int FROM memories "
-        f"WHERE agent_id = :aid AND archived_at IS NULL AND id IN ({id_list})",
+        f"WHERE agent_id = :aid AND archived_at IS NULL AND soft_evicted = FALSE "
+        f"AND id IN ({id_list})",
         {"aid": agent_id},
     )
     kept_n = int(kept) if kept is not None else 0
