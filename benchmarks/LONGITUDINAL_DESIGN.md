@@ -3,8 +3,8 @@
 **Status:** pre-registration — EXECUTED at smoke scale AND publication scale (N=40),
 both 2026-07-04. What actually happened (results, amendments to this frozen protocol,
 and the bugs/artifacts found) lives in **[LONGITUDINAL_RESULTS.md](LONGITUDINAL_RESULTS.md)**
-(PR #42). See §12 (smoke trail) and **§13 (scaled N=40 trail: amendments A6–A10,
-findings §4.6–§4.8, results, and the §4.5 decay-fix now in progress)**.
+(PR #42). See §12 (smoke trail) and **§13 (scaled N=40 trail: amendments A6–A11,
+findings §4.6–§4.10, corrected results, and the §4.5 decay-fix — done + validated)**.
 **Purpose:** measure whether AEON-IQ's ranking/memory mechanisms (time-decay, importance,
 AMP co-access, AMP eviction, RMK feedback learning) produce a *measurable, mechanism-attributable*
 improvement over a pure-cosine baseline **when memories have history** — age, access patterns,
@@ -183,7 +183,7 @@ harness branch (PR #42). Quick trail so this doc is complete from either side:
 - **Next:** publication-scale run (≥30–50 conv, untruncated `_s`, RMK enabled with
   sweep serialization) in a fresh session.
 
-## 13. Scaled publication run (N=40, 2026-07-04) — amendments A6–A10, findings, results
+## 13. Scaled publication run (N=40, 2026-07-04) — amendments A6–A11, findings, results
 
 The publication run executed 2026-07-04: untruncated `longmemeval_s`, **N=40**, 5
 conditions, seed 42, RMK ON. Full numbers are in **RESULTS.md §8**; this section
@@ -199,6 +199,7 @@ kernel findings) so #41 is complete from either side.
 | A8 | Dedup **off** (`DEDUP_THRESHOLD=0`) | shipped default `0.05` collapses near-duplicate turns (returns existing id) → faithful 1 turn = 1 memory. Verified 1:1. Smoke ran with it ON (§4.7 confound). |
 | A9 | `MEMORYOS_ROLE=all`, **RMK ON** (reverses A5) | deadlock fixed properly (§4.8 advisory lock), so the scaled run exercises RMK for real. Probe: 112 sweeps + 110 aging txns + real bg sweep → 0 new deadlocks. |
 | A10 | **Rounds = repeated measure** | re-score the SAME unit each round on the aging corpus (was: partition units, which left rounds 2..R empty at any N). Yields a genuine recall-vs-age curve. Pre-registered caveat: uniform aging preserves ranking mathematically → a flat curve was the expected default *unless* the §4.5 filter triggers. |
+| A11 | **RMK compressed cadence** (post-scaled RMK-isolation test) | env-wire `RMK_UPDATE_COOLDOWN_SECS` + `RMK_MIN_EPISODES_BEFORE_UPDATE` (phantom knobs before, §4.9); lock **60 s / 5** (shipped 3600/20). Compresses RMK's shipped cadence, disclosed. Isolation: `amp-rmk` (amp-only toggles + RMK on) vs `amp-only` (RMK off) — only `RMK_ENABLED` differs. Run **once**, report as it lands. Committed before the RMK result. |
 
 ### 13b. Kernel findings §4.6–§4.8 (surfaced during scaled-run prep)
 
@@ -214,35 +215,60 @@ kernel findings) so #41 is complete from either side.
   across read→decide→write in `run_pressure_sweep_for_agent`, and taken by the harness
   around its mutations — total lock order, deadlock-free. This is what enabled A9 (RMK
   for real).
+- **§4.9 RMK tuning knobs were not env-wired** — `Config::from_env` read only
+  `RMK_ENABLED`; `update_cooldown_secs`/`min_episodes_before_update`/`epsilon` were
+  hardcoded, so the documented `RMK_UPDATE_COOLDOWN_SECS` knob was a phantom. Wired the
+  two rate-limit knobs from env (fix, commit `89ef009`); a false compression would
+  otherwise have been reported as a real verdict. Enables A11.
+- **§4.10 RMK learning is chat-path-only (known-issue / future-work)** — `insert_episode`
+  has one production caller, `src/proxy.rs:332` (the chat-completion proxy). A
+  retrieval-only workload records **0 episodes**, so RMK never learns regardless of
+  cadence (confirmed by A11: `rmk_episodes=0`, `rmk_policies=0`). A real product fact:
+  RMK's online learning is driven only by chat-completion traffic. Not changed here.
 
-### 13c. §4.5 decay-filter bug: latent → CONFIRMED SEVERE → being fixed
+### 13c. §4.5 decay-filter bug: latent → CONFIRMED SEVERE → FIXED + validated
 
 The scaled A10 aging curve (RESULTS §8.2) overturned the smoke's benign read. Under
-accumulated aging, configured decay (`0.03`) **removes** aged gold below the distance
-threshold: every decay-on condition collapses recall@10 from ~0.90–0.98 (r1) to
-**~0.13–0.15 (r5)**, while decay-off conditions stay at 1.0; `recall@5 == recall@10` in
-collapsed rows confirms removal, not demotion. Decision updated from "don't fix" to
-**fix it** — threshold gates raw cosine relevance, decay reorders only (matching the
-`decay_reorders_stale_memories` intent) — on its own commit with a survival test. The
-three decay conditions (decay-only, aeon-full, aeon-full-importance) are being re-run
-post-fix; the §8.2 curve is retained as the pre-fix baseline.
+accumulated aging, configured decay (`0.03`) **removed** aged gold below the distance
+threshold: every decay-on condition collapsed recall@10 from ~0.90–0.98 (r1) to
+**~0.13–0.15 (r5)**, while decay-off conditions stayed at 1.0; `recall@5 == recall@10`
+in collapsed rows confirmed removal, not demotion. **Fixed** (commit `49cd083`):
+threshold gates raw `cosine_dist`; decay/importance keep `ORDER BY distance` so they
+reorder only (matching the `decay_reorders_stale_memories` intent). Validated three
+ways: (1) new `stale_relevant_memory_survives_decay_filter` unit test, (2) green 22-test
+`memory::store` suite (no regression), (3) N=40 re-run of the three decay conditions —
+collapse gone, flat curves (recall@10 0.925–1.000), decay now the documented mild
+reorder. `decay_rate=0` makes the fix a provable no-op, so baseline/amp-only were not
+re-run. §8.2 keeps the pre-fix (before) and corrected (after) curves side by side.
 
 ### 13d. Scaled results (see RESULTS §8 for full tables)
 
-- **AMP under pressure — robust win, confirmed at scale:** gold_retention 0.876–0.911
-  (AMP) vs 0.272–0.334 (LRU/random), ~2.7–3.0× across all three pressure conditions —
-  stronger than the smoke's ~2×.
-- **Decay — negative finding (pre-fix):** actively destroys recall under aging (§13c).
-- **Importance (A7) — small real ranking gain:** variant pins `mean_first_gold_rank=1.0`
-  every round, higher pressure nDCG (0.722 vs 0.580); recall still decay-limited.
-- **RMK — ran for real, no measurable lift, likely under-exercised:** role=all, no
-  deadlock; retention 0.888 (RMK on) ≈ 0.876 (off); ~1 h policy cooldown vs tens-of-min
-  runtime ⇒ ≤ ~1 learning cycle. Optional longer re-run pending.
+- **AMP under pressure — the pillar, holds before AND after the fix:** gold_retention
+  **0.876–0.903** (AMP) vs 0.272–0.369 (LRU/random), ~2.5–3.0× across every pressure
+  arm (incl. the post-fix aeon-full 0.899 / importance 0.903 / amp-rmk 0.895). The §4.5
+  fix targets the retrieval threshold, which the pressure metric does not depend on — so
+  the headline is **not contaminated** by the fix.
+- **Decay — found → fixed:** pre-fix collapse (r5 ≈ 0.13) → post-fix flat curves
+  (§13c). Decay is now the documented mild reorder, zero recall loss.
+- **Importance (A7) — a clean ranking win, clearest post-fix:** the variant is best of
+  the three decay conditions (recall@10=**1.000**, nDCG **0.811**, gold ~rank 1). Masked
+  pre-fix by the decay collapse.
+- **RMK — structurally unmeasurable by this benchmark (NOT "neutral"/"no lift"):** the
+  A11 isolation run recorded **0 episodes** (`rmk_episodes=0`, `rmk_policies=0`), so it
+  never learned. Cause (§4.10): episodes are recorded only on the chat-completion proxy
+  path (`proxy.rs:332`), which a retrieval-only benchmark bypasses. Cadence was wired +
+  verified live (60/5); the small pressure delta (0.895 vs 0.876) is noise. A real
+  verdict needs a proxy-path benchmark.
 
-### 13e. Next
+### 13e. Status — done (both branches complete)
 
-1. **§4.5 decay fix** (standalone product commit + survival test), then re-run the three
-   decay conditions at N=40 — corrected curve replaces RESULTS §8.2.
-2. Optional RMK longer-runtime re-run to convert §13d's "under-exercised" into a firm
-   verdict.
-3. Hard-gate review of the corrected complete picture before any white-paper folding.
+1. **§4.5 decay fix — DONE** (commit `49cd083` + survival test + green suite + N=40
+   re-run). Corrected before/after curves in RESULTS §8.2.
+2. **A11 RMK isolation — DONE, run once.** Verdict: structurally unmeasurable here
+   (0 episodes); §4.10 records the product fact.
+3. **Paper framing:** one pillar (AMP ~2.5–3× under pressure, holds post-fix); two
+   honest supporting results (decay found-and-fixed; importance ranking win); one honest
+   boundary (RMK). **RMK paper footnote:** *"RMK's online learning is exercised via the
+   chat path, not measured here; a real verdict requires a separate proxy-path
+   benchmark"* — flagged as future work, not attempted.
+4. Corrected picture reviewed at the hard gate before any white-paper folding.
