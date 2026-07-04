@@ -128,9 +128,21 @@ CONDITIONS = (
     "aeon-full-importance",
 )
 
-# A fixed simulated "now" for the seed clock (P0).  All aging is relative to this,
-# and rounds advance it forward.  Frozen so replays are identical.
-SIM_EPOCH = "2026-01-01T00:00:00Z"
+# Simulated "now" for the seed clock (P0).  MUST anchor to the real wall-clock at
+# run time, because the kernel computes decay staleness as (real NOW() -
+# last_accessed_at) (src/memory/store.rs: days_stale = EXTRACT(EPOCH FROM (NOW() -
+# ...))).  A FIXED PAST epoch (the old "2026-01-01") silently added the gap between
+# that date and the real run date to every memory's age — e.g. run on 2026-07-03 it
+# injected ~183 extra days of staleness, so exp(0.03·183) ≈ 242× inflated every
+# distance past the retrieval threshold and collapsed recall to 0 (bench smoke,
+# 2026-07-03).  Anchoring to now keeps the intended 0..window_days seed ages.
+#
+# Determinism is preserved where it matters: the RELATIVE aging pattern (which
+# memory is older) is a pure function of (memory id, seed) in longitudinal_age.sql,
+# and the per-round offsets are fixed.  Only the absolute anchor moves to "now",
+# which is required for the kernel's real-clock decay to see the designed window.
+# The exact epoch used is recorded in the results payload ("sim_epoch") for audit.
+SIM_EPOCH = utc_now()
 
 CSV_FIELDS = [
     "phase",
@@ -591,7 +603,13 @@ def run_rounds(
                 apply_feedback_rule(agent_id, result_ids, gold_ids, counters)
                 # a second co-retrieval pass strengthens the co-access edge for
                 # gold pairs that appear together (design §4 P1..PR step b).
-                _, reinforce_ids, _ = search(unit["agent_id"], unit["question"], counters)
+                # search() returns raw result dicts; extract ids like score_unit.
+                _, reinforce_results, _ = search(
+                    unit["agent_id"], unit["question"], counters
+                )
+                reinforce_ids = [
+                    str(rr.get("id")) for rr in reinforce_results[:SEARCH_LIMIT]
+                ]
                 apply_feedback_rule(agent_id, reinforce_ids, gold_ids, counters)
         # (d) advance the simulated clock via SQL.
         advance_clock(pg, agent_id, delta_days)
