@@ -191,6 +191,18 @@ pub async fn aggregate_task_success(state: &AppState) -> anyhow::Result<u64> {
 /// memories whose pressure has fallen below `threshold_low` are restored.
 ///
 /// Runs every 5 minutes when AMP or RMK is enabled.
+/// Classifier for the per-agent advisory lock that serializes AMP pressure
+/// sweeps.  Used as the first key of `pg_advisory_xact_lock(int4, int4)`; the
+/// second key is `hashtext(agent_id)`, so sweeps for different agents proceed
+/// concurrently while sweeps for the SAME agent (background timer vs.
+/// management-triggered force-sweep vs. an external orchestrator) serialize.
+///
+/// External drivers that mutate an agent's `memories` rows out-of-band MUST take
+/// this same lock with the same classifier to avoid deadlocking against a sweep.
+/// The longitudinal benchmark harness does exactly this (see
+/// `benchmarks/scripts/run_longitudinal.py`, `AMP_SWEEP_LOCK_CLASSIFIER`).
+pub(crate) const AMP_SWEEP_LOCK_CLASSIFIER: i32 = 0x0041_4D50; // 'A','M','P'
+
 pub async fn run_pressure_sweep_job(state: AppState) {
     info!("AMP pressure sweep worker started (interval=5min)");
 
@@ -241,13 +253,29 @@ pub(crate) async fn run_pressure_sweep_for_agent(
     let controller_params = state.config.amp_config.controller_params.clone();
     let min_age_seconds = controller_params.min_age_seconds;
 
+    // Serialize this sweep against (a) the autonomous 5-minute pressure-sweep
+    // timer, (b) other management-triggered force-sweeps, and (c) any external
+    // orchestrator mutating the same agent's rows (e.g. the longitudinal
+    // benchmark harness, which takes this SAME per-agent advisory lock around its
+    // aging SQL).  Without it, concurrent `UPDATE memories SET soft_evicted ...`
+    // and `UPDATE memories SET created_at ...` acquire row locks in opposing
+    // orders and deadlock.  The lock is transaction-scoped (auto-released on
+    // commit/rollback) and spans the read→decide→write cycle, so the eviction
+    // decision is taken against a snapshot no concurrent sweep can mutate.
+    let mut tx = state.db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+        .bind(AMP_SWEEP_LOCK_CLASSIFIER)
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await?;
+
     // Count active (non-archived, non-soft-evicted) memories for this agent.
     let current_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM memories
          WHERE agent_id = $1 AND archived_at IS NULL AND soft_evicted = FALSE",
     )
     .bind(agent_id)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await?;
 
     // Restore persisted controller state so integral action accumulates
@@ -256,13 +284,15 @@ pub(crate) async fn run_pressure_sweep_for_agent(
         "SELECT aggressiveness, integral_error FROM amp_controller_state WHERE agent_id = $1",
     )
     .bind(agent_id)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *tx)
     .await?;
     let (agg0, int0) = prior.unwrap_or((0.0, 0.0));
     let mut pi = PIController::with_state(controller_params, agg0, int0);
     let (threshold_high, threshold_low) = pi.update(current_count as u64, target, 1.0);
     let (agg1, int1) = pi.state();
-    if let Err(e) = sqlx::query(
+    // Inside the advisory-locked transaction a failed statement poisons the txn,
+    // so this must propagate (abort the whole sweep) rather than warn-and-continue.
+    sqlx::query(
         "INSERT INTO amp_controller_state (agent_id, aggressiveness, integral_error, updated_at)
          VALUES ($1, $2, $3, NOW())
          ON CONFLICT (agent_id) DO UPDATE
@@ -271,11 +301,8 @@ pub(crate) async fn run_pressure_sweep_for_agent(
     .bind(agent_id)
     .bind(agg1)
     .bind(int1)
-    .execute(&state.db)
-    .await
-    {
-        warn!(agent_id = %agent_id, "Pressure sweep: controller-state persist failed: {}", e);
-    }
+    .execute(&mut *tx)
+    .await?;
 
     // Fetch all non-archived memories (including currently soft-evicted ones so we
     // can restore them) with the pressure-relevant columns.
@@ -285,7 +312,7 @@ pub(crate) async fn run_pressure_sweep_for_agent(
          WHERE agent_id = $1 AND archived_at IS NULL",
     )
     .bind(agent_id)
-    .fetch_all(&state.db)
+    .fetch_all(&mut *tx)
     .await?;
 
     let pm = PressureManager::new(pressure_params);
@@ -331,18 +358,15 @@ pub(crate) async fn run_pressure_sweep_for_agent(
     if !pressure_updates.is_empty() {
         let (ids, pressures): (Vec<uuid::Uuid>, Vec<f64>) =
             pressure_updates.iter().cloned().unzip();
-        if let Err(e) = sqlx::query(
+        sqlx::query(
             "UPDATE memories SET pressure = data.pressure
              FROM (SELECT UNNEST($1::uuid[]) AS id, UNNEST($2::float8[]) AS pressure) AS data
              WHERE memories.id = data.id",
         )
         .bind(&ids)
         .bind(&pressures)
-        .execute(&state.db)
-        .await
-        {
-            warn!(agent_id = %agent_id, "Pressure sweep: batched pressure update failed: {}", e);
-        }
+        .execute(&mut *tx)
+        .await?;
     }
 
     // Soft-evict.
@@ -353,7 +377,7 @@ pub(crate) async fn run_pressure_sweep_for_agent(
              WHERE id = ANY($1)",
         )
         .bind(&to_evict)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
         info!(agent_id = %agent_id, count = to_evict.len(), "AMP: soft-evicted memories");
     }
@@ -366,10 +390,12 @@ pub(crate) async fn run_pressure_sweep_for_agent(
              WHERE id = ANY($1)",
         )
         .bind(&to_restore)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
         info!(agent_id = %agent_id, count = to_restore.len(), "AMP: restored soft-evicted memories");
     }
+
+    tx.commit().await?;
 
     let newly_evicted = to_evict.len() as i64;
     let newly_restored = to_restore.len() as i64;

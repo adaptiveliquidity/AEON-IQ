@@ -68,6 +68,8 @@ import os
 import subprocess
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +119,34 @@ DEFAULT_DELTA_DAYS = 6  # 5 rounds × ~6 days ≈ the 30-day aging window
 DEFAULT_WINDOW_DAYS = 30
 DEFAULT_PRESSURE_MULTIPLIER = 2.5  # PP corpus ≈ 2.5× AMP_TARGET_ACTIVE_COUNT (§4)
 DEFAULT_SWEEP_CAP = 20  # hard cap on forced sweeps (§2 committed rule)
+
+# Per-agent advisory-lock classifier serializing our out-of-band row mutations
+# (aging, distractor seed, LRU/random eviction, clock advance) against the
+# kernel's AMP pressure sweep — the background 5-min timer AND the management
+# force-sweep endpoint both take
+# pg_advisory_xact_lock(<classifier>, hashtext(agent_id)) for their read→write.
+# MUST equal AMP_SWEEP_LOCK_CLASSIFIER in src/rmk_worker.rs (0x00414D50 =
+# 4279632); if the kernel constant changes, change this too or the run
+# deadlocks again (the failure this whole mechanism exists to prevent).
+AMP_SWEEP_LOCK_CLASSIFIER = 0x00414D50  # 'A','M','P' = 4279632
+
+# Amendment A6: parallelize P0 seeding across this many threads.  Seeding is the
+# dominant wall-clock cost (synchronous embedding round-trips at ~3/s serial);
+# concurrency is PERF-ONLY (order-independent creates; aging is applied post-seed
+# by memory id, gold-blind, so seed order cannot affect stored state).  Set to 1
+# to restore the original serial path (used by the A6 integrity check).
+SEED_CONCURRENCY = int(os.environ.get("LONGITUDINAL_SEED_CONCURRENCY", "16"))
+
+# Amendment A7 (pre-registered): the create API silently drops importance
+# (CreateMemoryBody = {content, memory_type}) and hardcodes importance_score=1.0,
+# so the importance-weighting term is inert until scores are set out-of-band.
+# Exactly as the timeline is SQL-injected to test decay (the API has no timestamp
+# field either), the importance-variant condition SQL-sets importance_score
+# post-seed with these FIXED, pre-registered values: gold rows high, all others
+# low.  Non-gold MUST be < gold: the retrieval penalty is (1 - importance_score),
+# so leaving non-gold at the API default 1.0 would rank gold BELOW non-gold.
+A7_GOLD_IMPORTANCE = 0.95
+A7_NONGOLD_IMPORTANCE = 0.5
 DEFAULT_DEADBAND = int(os.environ.get("AMP_DEADBAND", "5"))
 DEFAULT_TARGET_ACTIVE = int(os.environ.get("AMP_TARGET_ACTIVE_COUNT", "1000"))
 
@@ -388,6 +418,82 @@ class PgExecutor:
             # psql -c handles multi-statement files directly.
             self.execute(sql, params)
 
+    # -- advisory-locked mutation (serialize vs the kernel AMP sweep) -----------
+
+    @contextmanager
+    def advisory_lock(self, agent_id: str):
+        """Hold the per-agent AMP-sweep advisory xact lock across the block.
+
+        The kernel's AMP pressure sweep (background 5-min timer AND the
+        management force-sweep endpoint) takes
+        ``pg_advisory_xact_lock(AMP_SWEEP_LOCK_CLASSIFIER, hashtext(agent_id))``
+        for the duration of its read->decide->write.  Any out-of-band mutation of
+        the SAME agent's ``memories`` rows must hold the same lock, or the two
+        ``UPDATE memories`` statements deadlock on opposing row-lock orders
+        (observed 2026-07-04).  The lock spans multiple statements, so it needs a
+        real transaction; the connection is autocommit=True, so we open an
+        explicit block.  Transaction-scoped: released on commit/rollback.
+        """
+        if self.backend == "psycopg":
+            with self._conn.transaction():  # type: ignore[union-attr]
+                with self._conn.cursor() as cur:  # type: ignore[union-attr]
+                    cur.execute(
+                        "SELECT pg_advisory_xact_lock(%s::int4, hashtext(%s))",
+                        (AMP_SWEEP_LOCK_CLASSIFIER, agent_id),
+                    )
+                yield
+        elif self.backend == "psycopg2":
+            prev = self._conn.autocommit  # type: ignore[union-attr]
+            self._conn.autocommit = False  # type: ignore[union-attr]
+            try:
+                with self._conn.cursor() as cur:  # type: ignore[union-attr]
+                    cur.execute(
+                        "SELECT pg_advisory_xact_lock(%s::int4, hashtext(%s))",
+                        (AMP_SWEEP_LOCK_CLASSIFIER, agent_id),
+                    )
+                yield
+                self._conn.commit()  # type: ignore[union-attr]
+            except Exception:
+                self._conn.rollback()  # type: ignore[union-attr]
+                raise
+            finally:
+                self._conn.autocommit = prev  # type: ignore[union-attr]
+        else:
+            # docker-exec backend: each `psql -c` is a fresh session, so a
+            # cross-statement session lock cannot be held here.  execute_locked /
+            # execute_file_locked inline BEGIN;lock;...;COMMIT in a single -c for
+            # that backend instead; a bare advisory_lock() block is best-effort.
+            yield
+
+    def execute_locked(self, sql: str, params: dict[str, Any]) -> None:
+        """execute() one statement while holding the agent's AMP-sweep lock."""
+        agent_id = params["agent_id"]
+        if self.backend == "docker":
+            wrapped = (
+                f"BEGIN; SELECT pg_advisory_xact_lock({AMP_SWEEP_LOCK_CLASSIFIER}, "
+                f"hashtext({self._psql_quote(agent_id)})); "
+                f"{self._docker_substitute(sql, params)}; COMMIT;"
+            )
+            self._run_psql(wrapped)
+            return
+        with self.advisory_lock(agent_id):
+            self.execute(sql, params)
+
+    def execute_file_locked(self, path: Path, params: dict[str, Any]) -> None:
+        """execute_file() while holding the agent's AMP-sweep lock."""
+        agent_id = params["agent_id"]
+        if self.backend == "docker":
+            sql = path.read_text(encoding="utf-8")
+            wrapped = (
+                f"BEGIN; SELECT pg_advisory_xact_lock({AMP_SWEEP_LOCK_CLASSIFIER}, "
+                f"hashtext({self._psql_quote(agent_id)})); "
+                f"{self._docker_substitute(sql, params)}; COMMIT;"
+            )
+            self._run_psql(wrapped)
+            return
+        with self.advisory_lock(agent_id):
+            self.execute_file(path, params)
+
     def close(self) -> None:
         if self._conn is not None:
             try:
@@ -430,23 +536,48 @@ def seed_corpus(
     gold_keys: set[str],
     gold_importance: float | None,
     counters: dict[str, int],
+    max_workers: int | None = None,
 ) -> dict[str, str]:
     """Seed every turn; return {turn_key: memory_id}.
 
     When gold_importance is set (aeon-full-importance condition), gold turns are
     seeded at that importance and everything else at 0.5.  Otherwise ALL turns get
     the same 0.5 (the primary, conservative "uniform importance" setup, §3).
+
+    Amendment A6: seeding is parallelized across ``max_workers`` threads (default
+    SEED_CONCURRENCY / env LONGITUDINAL_SEED_CONCURRENCY).  PERF-ONLY: each turn
+    is an independent create, the {turn_key: memory_id} mapping is
+    order-independent, and P0 aging (applied AFTER seeding, keyed on memory id and
+    gold-blind) makes seed order irrelevant to stored state.  Pass max_workers=1
+    for the original serial path (the A6 integrity check compares the two).  Each
+    worker uses a private counter; tallies are summed single-threaded after join,
+    so request/error counts (and the error-rate BAIL) stay exact.
     """
+    if max_workers is None:
+        max_workers = SEED_CONCURRENCY
     delete_agent(agent_id)  # clean any residue for corpus isolation
-    mapping: dict[str, str] = {}
-    for turn in turns:
+
+    def _work(turn: dict) -> tuple[str, str | None, dict[str, int]]:
         if gold_importance is not None and turn["key"] in gold_keys:
             importance = gold_importance
         else:
             importance = 0.5
-        mem_id = seed_memory(agent_id, turn["content"], importance, counters)
+        local = {"requests": 0, "errors": 0}
+        mem_id = seed_memory(agent_id, turn["content"], importance, local)
+        return turn["key"], mem_id, local
+
+    if max_workers and max_workers > 1:
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            outcomes = list(ex.map(_work, turns))
+    else:
+        outcomes = [_work(t) for t in turns]
+
+    mapping: dict[str, str] = {}
+    for key, mem_id, local in outcomes:
+        counters["requests"] += local["requests"]
+        counters["errors"] += local["errors"]
         if mem_id is not None:
-            mapping[turn["key"]] = mem_id
+            mapping[key] = mem_id
     return mapping
 
 
@@ -578,6 +709,36 @@ def apply_feedback_rule(
 # ── Phases ─────────────────────────────────────────────────────────────────────
 
 
+def inject_importance(
+    pg: PgExecutor,
+    agent_id: str,
+    gold_ids: set[str],
+    gold_importance: float,
+    base_importance: float = A7_NONGOLD_IMPORTANCE,
+) -> None:
+    """A7: SQL-set importance_score post-seed (the create API ignores importance
+    and hardcodes 1.0 — see LONGITUDINAL_DESIGN.md amendment A7 + API-gap finding).
+
+    Two locked UPDATEs, order matters: (1) ALL live rows → base_importance, then
+    (2) gold rows → gold_importance.  Base must run first and be < gold, else gold
+    left at the API default 1.0 would out-rank... be out-ranked (penalty is
+    1 - importance_score).  Advisory-locked (execute_locked) to serialize vs the
+    AMP sweep, same as aging.
+    """
+    pg.execute_locked(
+        "UPDATE memories SET importance_score = :imp "
+        "WHERE agent_id = :agent_id AND archived_at IS NULL",
+        {"agent_id": agent_id, "imp": float(base_importance)},
+    )
+    if gold_ids:
+        pg.execute_locked(
+            "UPDATE memories SET importance_score = :imp "
+            "WHERE agent_id = :agent_id AND id = ANY(:ids::uuid[])",
+            {"agent_id": agent_id, "imp": float(gold_importance),
+             "ids": list(gold_ids)},
+        )
+
+
 def phase_seed_with_history(
     pg: PgExecutor,
     agent_id: str,
@@ -588,9 +749,10 @@ def phase_seed_with_history(
     window_days: int,
     counters: dict[str, int],
 ) -> dict[str, str]:
-    """P0: seed all turns via API (real embeddings), then SQL-age gold-blind."""
+    """P0: seed all turns via API (real embeddings), SQL-age gold-blind, and (for
+    the importance variant) SQL-inject pre-registered importance_score (A7)."""
     mapping = seed_corpus(agent_id, turns, gold_keys, gold_importance, counters)
-    pg.execute_file(
+    pg.execute_file_locked(
         AGE_SQL,
         {
             "agent_id": agent_id,
@@ -599,6 +761,13 @@ def phase_seed_with_history(
             "as_of": SIM_EPOCH,
         },
     )
+    # A7: importance is only non-uniform in the importance variant (gold_importance
+    # set).  The primary conditions keep uniform importance (the create default),
+    # which is inert by design — a uniform score is a constant factor on distance
+    # and cannot change ranking.
+    if gold_importance is not None:
+        gold_ids = {mapping[k] for k in gold_keys if k in mapping}
+        inject_importance(pg, agent_id, gold_ids, gold_importance)
     return mapping
 
 
@@ -608,7 +777,7 @@ def advance_clock(pg: PgExecutor, agent_id: str, delta_days: float) -> None:
     moving "now" forward — decay is a function of (now - last_accessed_at) — and
     keeps SIM_EPOCH fixed.  Gold-blind: applies uniformly to all live memories.
     """
-    pg.execute(
+    pg.execute_locked(
         """
         UPDATE memories
         SET created_at       = created_at - make_interval(secs => :secs),
@@ -911,7 +1080,7 @@ def main() -> int:
     # For aeon-full-importance, default gold importance high if not given (§3).
     gold_importance = args.gold_importance
     if args.condition == "aeon-full-importance" and gold_importance is None:
-        gold_importance = 0.95
+        gold_importance = A7_GOLD_IMPORTANCE
 
     try:
         raw = load_raw_dataset(args.dataset, args.dataset_file)
@@ -1063,7 +1232,7 @@ def run_pressure_phase(
     # metric; post-eviction recall is measured over real memories only.
     n_distractors = int(args.target_active * args.pressure_multiplier)
     dim = embedding_dim(pg, agent_id)
-    pg.execute_file(
+    pg.execute_file_locked(
         DISTRACTOR_SQL,
         {"agent_id": agent_id, "n_distractors": n_distractors, "dim": dim,
          "as_of": SIM_EPOCH},
@@ -1072,7 +1241,7 @@ def run_pressure_phase(
     # reflects a realistic mixed-age corpus (same window, same seed family).  The
     # aging hash is a pure function of (id, seed), so real memories land on their
     # same P0 ages and distractors draw from the identical distribution.
-    pg.execute_file(
+    pg.execute_file_locked(
         AGE_SQL,
         {"agent_id": agent_id, "seed": args.seed, "window_days": args.window_days,
          "as_of": SIM_EPOCH},
@@ -1103,8 +1272,8 @@ def run_pressure_phase(
     rnd_gold = {rnd_remap[g] for g in gold_ids if g in rnd_remap}
 
     if k > 0:
-        pg.execute_file(LRU_SQL, {"agent_id": lru_agent, "k": k})
-        pg.execute_file(RANDOM_SQL, {"agent_id": rnd_agent, "k": k, "seed": args.seed})
+        pg.execute_file_locked(LRU_SQL, {"agent_id": lru_agent, "k": k})
+        pg.execute_file_locked(RANDOM_SQL, {"agent_id": rnd_agent, "k": k, "seed": args.seed})
 
     lru_rows, _ = score_after_eviction(
         "lru", args.dataset, args.condition, lru_agent, lru_mapping, units,
