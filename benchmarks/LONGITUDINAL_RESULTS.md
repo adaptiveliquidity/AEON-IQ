@@ -51,7 +51,17 @@ findings at the smoke stage and are logged here for the anti-cherry-pick trail.
 | A2 | For the smoke, `_s` haystack **truncated** to gold sessions + 12 distractor sessions/record (~139 turns/agent vs ~492) | Full `_s` = ~492 turns/agent; seeding 3 agents × 2 conditions blows the wall-clock budget. Truncation hits both baseline and every condition **equally**, so relative comparisons are unaffected. The full run must use untruncated `_s`. | smoke |
 | A3 | `SIM_EPOCH` anchored to **run-time now** (was fixed `2026-01-01`) | Harness bug — see §4.1. Not a tuning choice; a correctness fix. | smoke |
 | A4 | `gold_retention` counts `soft_evicted` as evicted | Metric artifact — see §4.2. Correctness fix. | full run |
-| A5 | Kernel run with `MEMORYOS_ROLE=proxy` during the run | Serve the forced-sweep endpoint but disable background workers, so forced sweeps are deterministic and the background pressure-sweep job doesn't deadlock against the harness's SQL. **Consequence:** background RMK policy-learning and co-access decay are **not** exercised (see §6). | full run |
+| A5 | Kernel run with `MEMORYOS_ROLE=proxy` during the **smoke** run | Serve the forced-sweep endpoint but disable background workers, so forced sweeps are deterministic and the background pressure-sweep job doesn't deadlock against the harness's SQL. **Consequence:** background RMK policy-learning and co-access decay are **not** exercised (see §6). **SUPERSEDED for the scaled run by A9.** | full run |
+| A6 | P0 seeding parallelized (16 threads, env `LONGITUDINAL_SEED_CONCURRENCY`) | Serial seeding is ~3/s (synchronous embedding round-trips) → ~10 h for the 5-condition untruncated run. **Perf-only:** creates are order-independent and aging is applied post-seed by memory id (gold-blind), so seed order cannot affect stored state. Integrity-verified: serial == concurrent, byte-identical stored state (mapping keys, per-turn content, importance); 1:1 (100/100). | scaled-run prep |
+| A7 | Importance **SQL-injected** post-seed for the importance variant: **gold = 0.95, non-gold = 0.5** (fixed, pre-registered before the run) | The create API silently drops `importance` (`CreateMemoryBody` = {content, memory_type}) and hardcodes `importance_score = 1.0`, so the importance-weighting term is inert. Exactly as the **timeline** is SQL-injected to test decay (the API has no timestamp field either), importance is SQL-injected to test the weighting math. Non-gold **must** be < gold (retrieval penalty = 1 − score). See §4.6. | scaled-run prep |
+| A8 | Dedup **disabled** during seeding (`DEDUP_THRESHOLD=0`) | Shipped default `0.05` skips an insert within cosine-distance 0.05 of an existing live memory and returns the **existing** id, silently collapsing near-duplicate turns (N turns → < N memories) and potentially merging a gold turn away. Off ⇒ faithful **1 turn = 1 distinct retrievable memory**. Analogous to the existing `ARCHIVAL_INTERVAL_HOURS=0`. Verified 1:1 (100/100). The smoke run did **not** disable it — see §4.7. | scaled-run prep |
+| A9 | Scaled run uses `MEMORYOS_ROLE=all` with **RMK ON** (reverses A5) | The smoke's A5 proxy-role dodge disabled RMK. The deadlock is now fixed properly (per-agent advisory lock serializing the AMP sweep vs harness SQL; §4.8), so the scaled run exercises RMK's learning loop for real. Probe: 112 forced sweeps + 110 aging txns + a real background sweep → zero new deadlocks. | scaled-run prep |
+
+**Scaled run (2026-07-04):** untruncated `longmemeval_s` (drops A2), **N = 40**
+conversations, 5 conditions (baseline / decay-only / amp-only / aeon-full /
+aeon-full-importance), seed 42, corrected `gold_retention` (A4), **RMK ON** (A9).
+Amendments A6–A9 and the §4.6–§4.8 findings were committed **before** this run
+(code commit `2352c3b` + this doc) for the anti-cherry-pick trail.
 
 Decay stays at the pre-registered **configured** value `MEMORY_DECAY_RATE=0.03`,
 `IMPORTANCE_BOOST_FACTOR=0.5` (ships as 0.0 — write-ups must say "configured
@@ -170,6 +180,44 @@ say decay should **re-rank**. So this is a latent bug, not a feature. **Decision
 ranking drag with zero recall loss* (baseline nDCG 0.693 → aeon-full 0.627 at smoke;
 recall unchanged; the removal never triggered on these queries). Revisit only if
 removal manifests at larger staleness/scale.
+
+### 4.6 Kernel: create API silently ignores importance (DEFERRED known-issue)
+`CreateMemoryBody` (`src/api.rs`) accepts only `{content, memory_type}`; the
+`importance` field the harness sends is dropped by serde, and `create_memory`
+hardcodes stored `importance_score = 1.0`. Because the retrieval formula's
+importance factor is `(1.0 + importance_boost·(1.0 − importance_score))`, a uniform
+`1.0` makes that factor identically `1.0` — **the importance-weighting mechanism is
+inert in production via this API, for any `IMPORTANCE_BOOST_FACTOR`.** This also
+means the smoke run's "no importance lift" was **structurally untestable**, not
+disproven (same status as RMK under A5). **Decision (owner): do not change shipped
+behavior mid-benchmark** (same treatment as §4.5). The scaled run tests the
+*weighting math* by SQL-injecting importance (A7), exactly as it tests decay by
+SQL-injecting the timeline; the paper reports both the math result **and** this
+product gap ("importance is inert in production until the API accepts the field").
+Surfaced 2026-07-04 by the A6 integrity check.
+
+### 4.7 Kernel: insert-time dedup silently collapsed the corpus (fixed via A8)
+`store_memory` (`src/memory/store.rs`) skips an insert when the nearest live memory
+is within `DEDUP_THRESHOLD` (cosine distance, **default 0.05**) and returns the
+**existing** id. Seeding N similar turns therefore yields **< N** distinct memories
+(measured: 100 near-identical turns → 87 rows serial / 78 concurrent), and a gold
+turn can be merged into another memory and become unretrievable under its own id.
+The smoke run ran with the default `0.05` **on**, so its corpus was subject to this
+collapse (an unquantified confound on the smoke numbers). Fixed for the scaled run
+by A8 (`DEDUP_THRESHOLD=0`), verified 1:1 (100/100). Surfaced 2026-07-04 while
+validating A6.
+
+### 4.8 Kernel: AMP sweep vs harness SQL deadlock (fixed — enables RMK / A9)
+The background AMP pressure sweep and the harness's row mutations (aging, forced
+sweeps) both `UPDATE memories` and acquired row locks in opposing orders →
+Postgres deadlock. The smoke run dodged it by disabling background workers (A5),
+which also disabled RMK. Fixed properly: `run_pressure_sweep_for_agent` now holds a
+per-agent advisory lock (`pg_advisory_xact_lock(AMP_SWEEP_LOCK_CLASSIFIER,
+hashtext(agent_id))`) across its read→decide→write, and the harness takes the same
+lock around its mutations — a total lock order, deadlock-free by construction.
+Probe (330 s, dedup/RMK on, `role=all`): 112 forced sweeps + 110 aging txns + one
+real autonomous background sweep → **zero** new `pg_stat_database.deadlocks`, zero
+errors. This is what lets A9 run RMK for real.
 
 ---
 
