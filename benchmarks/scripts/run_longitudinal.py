@@ -108,6 +108,7 @@ SQL_DIR = Path(__file__).resolve().parents[1] / "sql"
 AGE_SQL = SQL_DIR / "longitudinal_age.sql"
 LRU_SQL = SQL_DIR / "lru_evict.sql"
 RANDOM_SQL = SQL_DIR / "random_evict.sql"
+DISTRACTOR_SQL = SQL_DIR / "seed_distractors.sql"
 
 # Pre-registered defaults (§2/§4).  Overridable ONLY for cheaper smoke runs; the
 # committed run uses these.
@@ -734,6 +735,26 @@ def score_after_eviction(
     return rows, {"gold_total": gold_total}
 
 
+def embedding_dim(pg: PgExecutor, agent_id: str, default: int = 1536) -> int:
+    """Detect the embedding dimension from a live real memory of this agent.
+
+    The distractor far-vector must match the column's declared width (vector(1536)
+    for OpenAI small, vector(384) for bge-small).  Rather than hard-code it we read
+    it off a real embedding the API already produced during P0, so the harness
+    auto-adapts to whatever EMBEDDING_DIMENSION the kernel was booted with.
+    """
+    val = pg.scalar(
+        "SELECT vector_dims(embedding) FROM memories "
+        "WHERE agent_id = :aid AND embedding IS NOT NULL LIMIT 1",
+        {"aid": agent_id},
+    )
+    try:
+        d = int(val)
+        return d if d > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
 def gold_retention(
     pg: PgExecutor, agent_id: str, gold_ids: set[str]
 ) -> dict[str, Any]:
@@ -939,23 +960,37 @@ def run_pressure_phase(
     latencies: list[float],
     rows: list[dict],
 ) -> dict[str, Any]:
-    """PP: seed distractors, converge AMP sweeps to settle K, then run LRU/random
-    comparators over fresh copies evicting the SAME K; score all three.
+    """PP: seed FAR-embedding distractors (SQL, non-retrievable — §10d isolation
+    fix), converge AMP sweeps to settle K, then run LRU/random comparators over
+    fresh copies evicting the SAME K; score all three.
+
+    Primary pressure metric is gold_retention (fraction of gold surviving
+    eviction, pure archived_at set-membership); post-eviction recall is secondary
+    and, by construction, measured over real memories only (distractors can never
+    enter the top-k).
     """
     agents_created: list[str] = []
     gold_ids = {mapping[k] for k in gold_keys if k in mapping}
 
     # Seed a fixed distractor corpus so active_count ≫ target (§4 PP).
+    #
+    # Q2 isolation fix (§10d): distractors are inserted DIRECTLY via SQL with a
+    # fixed FAR (one-hot) embedding — NOT through the API with real embeddings.
+    # They count toward active_count (so AMP still has rows to soft-evict) but are
+    # never retrieval candidates (cosine sim ≈ 0 ≪ 0.95 threshold), so they cannot
+    # contaminate recall@k / MRR / nDCG.  gold_retention is the primary pressure
+    # metric; post-eviction recall is measured over real memories only.
     n_distractors = int(args.target_active * args.pressure_multiplier)
-    for i in range(n_distractors):
-        seed_memory(
-            agent_id,
-            f"pressure distractor #{i} — unrelated filler content for AMP pressure",
-            0.5,
-            counters,
-        )
-    # These distractors are seeded at NOW(); age them gold-blind too so pressure
-    # reflects a realistic mixed-age corpus (same window, same seed family).
+    dim = embedding_dim(pg, agent_id)
+    pg.execute_file(
+        DISTRACTOR_SQL,
+        {"agent_id": agent_id, "n_distractors": n_distractors, "dim": dim,
+         "as_of": SIM_EPOCH},
+    )
+    # Re-age the whole live corpus (real + distractor) gold-blind so pressure
+    # reflects a realistic mixed-age corpus (same window, same seed family).  The
+    # aging hash is a pure function of (id, seed), so real memories land on their
+    # same P0 ages and distractors draw from the identical distribution.
     pg.execute_file(
         AGE_SQL,
         {"agent_id": agent_id, "seed": args.seed, "window_days": args.window_days,
