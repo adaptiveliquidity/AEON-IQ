@@ -8,7 +8,7 @@
 > collapsed recall as memory ages: r1 ~0.90–0.98 → r5 ~0.13–0.15). That bug was then **fixed and validated** (commit
 > `49cd083` + survival test + green store suite (16 store.rs tests) + clean N=40 re-run — §8.2 carries
 > the before/after curves), and the AMP headline was **re-confirmed post-fix**
-> (0.876–0.903). RMK was found **structurally unmeasurable** by this retrieval-only
+> (0.876–0.911). RMK was found **structurally unmeasurable** by this retrieval-only
 > benchmark (0 episodes recorded — its learning is chat-completion-path only, §4.10 /
 > §8.4). §§1–7 below are the earlier smoke record.
 
@@ -430,8 +430,9 @@ not a lucky baseline shift.
 decay conditions with the fix leaves AMP pressure retention intact: aeon-full **0.899**
 vs LRU 0.309 / random 0.330; aeon-full-importance **0.903** vs 0.369 / 0.330; the A11
 `amp-rmk` arm **0.895** vs 0.327 / 0.347; unchanged `amp-only` 0.876. **AMP holds at
-0.876–0.903 across every arm, before and after the fix** — the fix targets the retrieval
-threshold, which the pressure metric does not depend on.
+0.876–0.911 across every arm, before and after the fix** (min = pre-fix amp-only 0.876,
+max = pre-fix importance 0.911; the four post-fix arms sit at 0.895–0.903) — the fix
+targets the retrieval threshold, which the pressure metric does not depend on.
 
 **Caveats on this headline — do not overstate precision:**
 - **Single seed (42), no confidence intervals.** Every number is one run; the ~2.5–3.0×
