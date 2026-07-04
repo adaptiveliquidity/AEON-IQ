@@ -1,6 +1,15 @@
-# Longitudinal Memory Benchmark — Results (smoke-scale, 2026-07-04)
+# Longitudinal Memory Benchmark — Results (smoke-scale + scaled N=40, 2026-07-04)
 
-**Status: preliminary / smoke-scale (n = 3 conversations).** These numbers are a
+> **▶ Scaled publication run (N=40, seed 42, untruncated `longmemeval_s`, RMK ON)
+> completed 2026-07-04 — see [§8](#8-scaled-publication-run-n40-2026-07-04).**
+> Headline confirmed at scale: **AMP retains ~0.88–0.91 of gold under pressure vs
+> ~0.27–0.33 for LRU/random (~2.7–3.0×)**. The stress test also **confirmed the
+> §4.5 decay-filter bug is severe** (configured decay collapses recall as memory
+> ages: r1 ~0.95 → r5 ~0.13). Those decay numbers are the **pre-fix** product; a
+> standalone §4.5 fix + re-run of the three decay conditions is in progress, after
+> which §8 will carry the corrected curve. §§1–7 below are the earlier smoke record.
+
+**Status: smoke-scale (n = 3) in §§1–7; scaled N=40 in §8.** The smoke numbers are a
 go/no-go and mechanism-sanity pass, **not** publication-grade. See
 [LONGITUDINAL_DESIGN.md](LONGITUDINAL_DESIGN.md) for the pre-registered protocol
 and [§6 Caveats](#6-caveats--what-was-and-wasnt-exercised) below for exactly what
@@ -201,17 +210,33 @@ toward AMP `active_count` (pressure) but sit at cosine distance ≈ 0.98 (> the 
 ceiling) so they are never retrieval candidates. `gold_retention` is the primary
 pressure metric; post-eviction recall is over real memories only.
 
-### 4.5 Kernel: decay filters below threshold instead of only re-ranking (LATENT; not fixed)
+### 4.5 Kernel: decay filters below threshold instead of only re-ranking (CONFIRMED SEVERE at scale; fix in progress)
 `src/memory/store.rs` applies decay to the distance that is then compared to the
 threshold (`WHERE cosine_dist·exp(rate·days_stale)·(1+…) < threshold`), so a
 sufficiently-stale memory is **removed** from results, not just down-ranked — even if
 highly relevant. The documented intent and the only decay test
 (`decay_reorders_stale_memories`, which passes `threshold = 5.0` to avoid the filter)
-say decay should **re-rank**. So this is a latent bug, not a feature. **Decision
-(owner): do not fix now** — at correct aging (0–30 d) the shipped effect is a *mild
-ranking drag with zero recall loss* (baseline nDCG 0.693 → aeon-full 0.627 at smoke;
-recall unchanged; the removal never triggered on these queries). Revisit only if
-removal manifests at larger staleness/scale.
+say decay should **re-rank**. So this is a bug, not a feature.
+
+**Smoke decision was "do not fix now" on the belief the shipped effect was a *mild
+ranking drag with zero recall loss.* The scaled run (A10 repeated-measure aging, §8.2)
+overturns that belief.** The smoke only ever scored round 1, so aging never
+accumulated and the removal never triggered. At N=40 with the corpus aging under
+repeated rounds, the filter fires hard: every condition with configured decay
+(`0.03`) collapses from recall@10 ≈ 0.90–0.98 at round 1 to **≈ 0.13–0.15 at round 5**,
+while the two decay-off conditions (baseline, amp-only) stay pinned at **1.0** across
+all rounds. That `recall@5 == recall@10` in every collapsed row (§8.2) is the
+signature of **removal, not demotion** — aged gold crosses the distance ceiling and
+is dropped from the candidate set entirely. So the effect is not a mild drag: **as
+shipped-configured, decay actively destroys recall as memory ages.**
+
+**Decision (updated 2026-07-04): fix it.** Now warranted by hard evidence, being
+implemented as a standalone product change — the threshold gates **raw** cosine
+relevance, decay only reorders candidates already inside the ceiling (matching the
+`decay_reorders_stale_memories` intent) — on its own commit with a survival test
+proving aged gold is retained. The §8.2 decay curve is therefore the **pre-fix**
+product; the three decay conditions (decay-only, aeon-full, aeon-full-importance) are
+being re-run after the fix, and the corrected curve will replace it in §8.
 
 ### 4.6 Kernel: create API silently ignores importance (DEFERRED known-issue)
 `CreateMemoryBody` (`src/api.rs`) accepts only `{content, memory_type}`; the
@@ -310,6 +335,115 @@ errors. This is what lets A9 run RMK for real.
 
 ---
 
-*Generated from `benchmarks/scripts/run_longitudinal.py` runs on 2026-07-04.
-Raw per-condition `longitudinal_quality.json` artifacts were produced with real
-OpenAI embeddings; re-run with the committed SQL + seed 42 to reproduce the aging.*
+## 8. Scaled publication run (N=40, 2026-07-04)
+
+Untruncated `longmemeval_s` (drops A2), **N = 40** conversations, 5 conditions, seed
+42, corrected `gold_retention` (A4), **RMK ON** / `MEMORYOS_ROLE=all` (A9), **dedup
+off** (A8), importance **SQL-injected** gold=0.95 / non-gold=0.5 for the variant (A7),
+**rounds = repeated measure** (A10). ~19,605 memories seeded per condition (40 agents
+× ~490 turns). All amendments + the §4.6–§4.8 findings were committed **before** this
+run (anti-cherry-pick trail). All 5 conditions completed `status = ok`.
+
+**This section reports the run straight, exactly as it landed. Nothing was tuned. The
+decay result below is a *negative* finding for the mechanism as shipped-configured —
+the opposite of a flattering number — which is the whole point of the stress test.
+The §8.2 decay curve is the PRE-FIX product (see §4.5); it is being re-run after the
+decay fix and will be replaced by the corrected curve.**
+
+### 8.1 Memory pressure (eviction) — the robust result, confirmed at scale
+
+Primary metric `gold_retention` (fraction of gold still retrievable after each policy
+soft-evicts the same settled K to target ≈ 1000), 40 per-agent samples per condition:
+
+| condition | **AMP** | LRU | random | AMP advantage | AMP post-evict recall@10 / nDCG@10 |
+|-----------|:------:|:---:|:------:|:-------------:|:----------------------------------:|
+| amp-only | **0.876** | 0.272 | 0.307 | **~3.0×** | 1.000 / 0.851 |
+| aeon-full | **0.888** | 0.300 | 0.289 | **~3.0×** | 0.950 / 0.580 |
+| aeon-full-importance | **0.911** | 0.334 | 0.328 | **~2.7×** | 0.925 / 0.722 |
+
+**AMP retains ~0.88–0.91 of gold under pressure vs ~0.27–0.33 for LRU/random —
+consistent ~2.7–3.0× across every pressure condition.** This is **stronger** than the
+smoke (there AMP 0.81–0.95 vs comparators 0.38–0.50 ≈ 2×): at scale the gold-blind
+comparators fall to ~0.27–0.33, so AMP's relative advantage *widens*. This is the
+headline, now at N=40. It is unaffected by the §4.5 decay bug (pressure is measured on
+its own SQL-seeded distractor corpus, not the aging haystack).
+
+### 8.2 Recall-vs-age curve (A10) — decay actively destroys recall (PRE-FIX; §4.5)
+
+recall@10 by round (corpus ages ~6 d per round underneath a re-scored query):
+
+| condition | r1 | r2 | r3 | r4 | r5 |
+|-----------|:--:|:--:|:--:|:--:|:--:|
+| cosine-baseline (decay 0) | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+| amp-only (decay 0) | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
+| **decay-only** (decay 0.03) | 0.975 | 0.825 | 0.650 | 0.325 | **0.150** |
+| **aeon-full** (decay 0.03) | 0.950 | 0.875 | 0.650 | 0.375 | **0.125** |
+| **aeon-full-importance** (decay 0.03) | 0.900 | 0.850 | 0.725 | 0.300 | **0.125** |
+
+nDCG@10 tells the same story (decay-only 0.557→0.035; aeon-full 0.580→0.043;
+importance 0.714→0.044). Aggregate over all 200 round-queries: baseline recall@10=1.000
+nDCG=0.824; amp-only 1.000 / 0.823; decay-only 0.585 / 0.286; aeon-full 0.595 / 0.298;
+importance 0.580 / 0.331.
+
+**Every decay-on condition collapses to ~13–15 % recall by round 5; every decay-off
+condition holds at 1.0.** In every collapsed row `recall@5 == recall@10` — the gold is
+**removed** from the candidate set (§4.5 filter), not merely demoted. This is the
+§4.5 bug manifesting at realistic accumulated aging, and it **overturns the smoke's
+"mild drag, zero recall loss"** read (the smoke only scored round 1, so aging never
+accumulated). Honest verdict: **shipped-configured decay is harmful, not neutral,
+under aging.** Fix + re-run in progress (§4.5).
+
+### 8.3 Importance (A7) — a small but real ranking gain
+
+With importance actually varying (gold 0.95 / non-gold 0.5, SQL-injected per A7 since
+the create API drops the field — §4.6), the importance variant pins
+`mean_first_gold_rank = 1.000` in **every** round (gold is always rank-1 when present,
+vs aeon-full's 1.13–1.29), and shows higher pressure-phase nDCG (**0.722 vs aeon-full
+0.580**) and retention (0.911 vs 0.888). So the **weighting math does help ranking
+quality when scores differ** — a modest, genuine positive. Recall still collapses
+across rounds with the others because decay filters the same aged gold out regardless
+of its importance. The §4.6 product gap stands: importance is inert in production until
+the create API accepts the field.
+
+### 8.4 RMK — exercised for real, no measurable lift (likely under-exercised)
+
+RMK genuinely ran this time (`MEMORYOS_ROLE=all`, background workers on, advisory-lock
+fix from §4.8 held — zero deadlocks), so this is a real "ran, no measurable lift,"
+**not** the smoke's "untested." Evidence: aeon-full (RMK on) AMP retention **0.888** ≈
+amp-only (RMK off) **0.876** — within noise; and aeon-full's rounds are dominated by
+the decay collapse, not RMK. **Caveat (honest, not spin):** RMK's policy-update cooldown
+is ~1 h, but each condition's harness wall-clock was tens of minutes (baseline 16 min),
+so its learning loop had time for at most ~1 update cycle — plausibly too few episodes
+to show learning. Verdict: **no measurable RMK benefit here, likely under-exercised;** a
+longer-runtime RMK re-run is under consideration to turn this into a firm verdict.
+
+### 8.5 Run health
+
+| condition | seeded | errors | error_rate | latency p50 / mean / p99 (ms) |
+|-----------|:------:|:------:|:----------:|:-----------------------------:|
+| cosine-baseline | 19,605 | 2 / 30,727 | 0.0001 | 271 / 363 / 2249 |
+| decay-only | 19,605 | 2 / 30,307 | 0.0001 | 260 / 313 / 1231 |
+| amp-only | 19,605 | 2 / 31,647 | 0.0001 | 270 / 420 / 2390 |
+| aeon-full | 19,605 | 2 / 31,225 | 0.0001 | 270 / 401 / 3300 |
+| aeon-full-importance | 19,605 | 2 / 30,731 | 0.0001 | 262 / 350 / 1571 |
+
+Negligible error rate (2 per ~30 k requests), healthy latency. Seeded corpus identical
+across conditions (same seed 42).
+
+### 8.6 What this changes
+
+1. **Headline holds and strengthens:** AMP ~2.7–3.0× under pressure at N=40 (§8.1).
+2. **§4.5 decay bug promoted latent → confirmed-severe and slated for a fix** (§4.5),
+   with the three decay conditions re-running post-fix; §8.2 is the pre-fix baseline
+   the corrected curve will be measured against.
+3. **Importance:** small real ranking gain when scores vary (§8.3); production gap
+   (§4.6) unchanged.
+4. **RMK:** ran for real, no measurable lift, likely under-exercised (§8.4); optional
+   longer re-run pending.
+
+---
+
+*Generated from `benchmarks/scripts/run_longitudinal.py` runs on 2026-07-04 (smoke §§1–7)
+and `run_pubscale.py` (scaled §8). Raw per-condition `longitudinal_quality.json`
+artifacts were produced with real OpenAI embeddings; re-run with the committed SQL +
+seed 42 to reproduce the aging.*
