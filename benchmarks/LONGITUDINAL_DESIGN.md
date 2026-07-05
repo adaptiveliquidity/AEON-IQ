@@ -261,8 +261,8 @@ re-run. §8.2 keeps the pre-fix (before) and corrected (after) curves side by si
   RESULTS §8.1 canonical table). Setpoint-independent
   claim: *AMP preserves gold near-fully while gold-blind eviction loses it in proportion to
   the eviction fraction.*
-- **Decay — found → fixed:** pre-fix collapse (r5 ≈ 0.13) → post-fix flat curves
-  (§13c). Decay is now the documented mild reorder, zero recall loss.
+- **Decay — found → fixed:** the pre-fix aging collapse (RESULTS §8.2 before-table) →
+  post-fix flat curves (§13c). Decay is now the documented mild reorder, zero recall loss.
 - **Importance (A7) — a clean ranking win, clearest post-fix:** the variant is best of
   the three decay conditions (recall@10=**1.000**, nDCG **0.811**, gold ~rank 1). Masked
   pre-fix by the decay collapse.
