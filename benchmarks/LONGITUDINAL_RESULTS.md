@@ -3,12 +3,13 @@
 > **▶ Scaled publication run (N=40, seed 42, untruncated `longmemeval_s`, RMK ON)
 > completed 2026-07-04 — see [§8](#8-scaled-publication-run-n40-2026-07-04).**
 > Headline (single N=40 run, seed 42 — point estimate, see §8.1 caveats): **AMP retains
-> ~0.88–0.91 of gold under pressure vs ~0.27–0.37 for LRU/random (~2.5–3.0×)**. The
+> far more gold under pressure than gold-blind LRU/random (~2.5–3.0×; all exact per-arm
+> figures and ranges live in the §8.1 canonical table)**. The
 > stress test also **confirmed the §4.5 decay-filter bug is severe** (configured decay
 > collapsed recall as memory ages: r1 ~0.90–0.98 → r5 ~0.13–0.15). That bug was then **fixed and validated** (commit
 > `49cd083` + survival test + green store suite (16 store.rs tests) + clean N=40 re-run — §8.2 carries
 > the before/after curves), and the AMP headline was **re-confirmed post-fix**
-> (0.876–0.911). RMK was found **structurally unmeasurable** by this retrieval-only
+> (§8.1 canonical table, rows 4–6). RMK was found **structurally unmeasurable** by this retrieval-only
 > benchmark (0 episodes recorded — its learning is chat-completion-path only, §4.10 /
 > §8.4). §§1–7 below are the earlier smoke record.
 
@@ -405,48 +406,54 @@ re-confirmed post-fix and is not contaminated by the decay change.
 Primary metric `gold_retention` (fraction of gold still retrievable after each policy
 soft-evicts the same settled K to target ≈ 1000), 40 per-agent samples per condition:
 
-| condition | **AMP** | LRU | random | AMP advantage | AMP post-evict recall@10 / nDCG@10 |
-|-----------|:------:|:---:|:------:|:-------------:|:----------------------------------:|
-| amp-only | **0.876** | 0.272 | 0.307 | **~3.0×** | 1.000 / 0.851 |
-| aeon-full | **0.888** | 0.300 | 0.289 | **~3.0×** | 0.950 / 0.580 |
-| aeon-full-importance | **0.911** | 0.334 | 0.328 | **~2.7×** | 0.925 / 0.722 |
+| condition | phase | **AMP** gold-ret | LRU | random | ratio | AMP post-evict r@10 / nDCG |
+|-----------|:-----:|:------:|:---:|:------:|:----:|:-------------------------:|
+| amp-only | decay 0 (fix no-op) | **0.876** | 0.272 | 0.307 | ~3.0× | 1.000 / 0.851 |
+| aeon-full | pre-fix | **0.888** | 0.300 | 0.289 | ~3.0× | 0.950 / 0.580 |
+| aeon-full-importance | pre-fix | **0.911** | 0.334 | 0.328 | ~2.7× | 0.925 / 0.722 |
+| aeon-full | post-fix | **0.899** | 0.309 | 0.330 | ~2.9× | 0.925 / 0.600 |
+| aeon-full-importance | post-fix | **0.903** | 0.369 | 0.330 | ~2.4× | 1.000 / 0.820 |
+| amp-rmk (A11) | post-fix | **0.895** | 0.327 | 0.347 | ~2.7× | 1.000 / 0.843 |
 
-**AMP retains ~0.88–0.91 of gold under pressure vs ~0.27–0.37 for LRU/random — a
-~2.5–3.0× ratio observed in this single run** (a point estimate, not a seed-averaged
-effect — see caveats below). Larger than the smoke's ~2× (AMP 0.81–0.95 vs comparators
-0.38–0.50). It is unaffected by the §4.5 decay bug (pressure is measured on its own
-SQL-seeded distractor corpus, not the aging haystack).
+> **⟵ CANONICAL SOURCE — single source of truth for every pressure number in this
+> document.** All prose (banner, §8.3, §8.4, §8.6, §8.7, and DESIGN §13) **points here and
+> does not restate these values.** Figures *derived* from this table, computed once:
+> - **AMP gold_retention range: 0.876–0.911** (min = `amp-only`; max = `aeon-full-importance`
+>   pre-fix). The four post-fix arms sit at **0.895–0.903**.
+> - **LRU/random range: 0.272–0.369** → reported band **~0.27–0.37**.
+> - **AMP advantage: ~2.5–3.0×** (per-arm extremes 0.903/0.369 ≈ 2.45× … 0.876/0.272 ≈ 3.2×).
+> - **Controller:** `converged = false`, active ≈ 981, settled K ≈ 2035 (~2× target 1000).
+> - **Run config:** N = 40, seed 42, `text-embedding-3-small`, `longmemeval_s`,
+>   `pressure_multiplier = 2.5`.
+
+**Interpretation.** AMP preserves near-all gold under pressure while gold-blind LRU/random
+lose it; the gap holds on every arm, **before and after the §4.5 fix** (rows 4–6 are
+post-fix — the fix targets the retrieval threshold, which the pressure metric does not
+depend on). This is a single-run point estimate, not a seed-averaged effect (see caveats).
+Larger than the smoke's ~2× (§3.2). Pressure is measured on its own SQL-seeded distractor
+corpus, not the aging haystack, so it is unaffected by the §4.5 decay bug.
 
 **Why the comparators drop from smoke to scale — mechanism, not coincidence.** LRU and
 random are gold-blind, so under a fixed eviction budget K they retain gold roughly in
 proportion to the surviving fraction, ≈ (pool − K)/pool. The untruncated N=40 corpus is
-larger, so the same target (≈1000) forces a *higher* eviction fraction (settled K ≈
-2000–2100, ~2× target) → the gold-blind "blind-dilution floor" falls to ~0.27–0.37. AMP
-is insulated because it evicts by learned utility and spares the gold the rounds phase
-reinforced. The widening edge is a predictable consequence of higher pressure at scale,
-not a lucky baseline shift.
+larger, so the same target forces a *higher* eviction fraction (settled K ≈ 2× target, per
+the canonical Controller row) → the gold-blind "blind-dilution floor" falls to the
+comparator band above. AMP is insulated because it evicts by learned utility and spares the
+gold the rounds phase reinforced. The widening edge is a predictable consequence of higher
+pressure at scale, not a lucky baseline shift.
 
-**Post-fix confirmation (§4.5 fix did not contaminate the headline).** Re-running the
-decay conditions with the fix leaves AMP pressure retention intact: aeon-full **0.899**
-vs LRU 0.309 / random 0.330; aeon-full-importance **0.903** vs 0.369 / 0.330; the A11
-`amp-rmk` arm **0.895** vs 0.327 / 0.347; unchanged `amp-only` 0.876. **AMP holds at
-0.876–0.911 across every arm, before and after the fix** (min = pre-fix amp-only 0.876,
-max = pre-fix importance 0.911; the four post-fix arms sit at 0.895–0.903) — the fix
-targets the retrieval threshold, which the pressure metric does not depend on.
-
-**Caveats on this headline — do not overstate precision:**
-- **Single seed (42), no confidence intervals.** Every number is one run; the ~2.5–3.0×
-  is a point estimate, not a variance-bounded effect. "Consistent" here means "held on
-  every arm and every agent in this run," **not** "across seeds."
-- **AMP did not converge.** The PI controller hit the 20-sweep cap with
-  `converged: false` (active ≈ 981 vs target 1000; settled K ≈ 2× target). The
-  comparison stays valid — all three arms evict the *same* settled K — but
-  "convergence" must not be implied.
-- **Ratio depends on the pressure setpoint** (`pressure_multiplier = 2.5`); a different
-  distractor load moves the eviction fraction and hence the absolute ratio. The robust,
-  setpoint-independent claim is: *AMP preserves gold near-fully while gold-blind
+**Caveats — do not overstate precision:**
+- **Single seed (42), no confidence intervals.** Every figure in the canonical table is one
+  run; the advantage is a point estimate, not a variance-bounded effect. "Consistent" means
+  "held on every arm and every agent in this run," **not** "across seeds."
+- **AMP did not converge.** The PI controller hit the 20-sweep cap with `converged: false`
+  (canonical Controller row). The comparison stays valid — all three arms evict the *same*
+  settled K — but "convergence" must not be implied.
+- **Ratio depends on the pressure setpoint** (`pressure_multiplier`, canonical row); a
+  different distractor load moves the eviction fraction and hence the absolute ratio. The
+  robust, setpoint-independent claim: *AMP preserves gold near-fully while gold-blind
   eviction loses it in proportion to the eviction fraction.*
-- **One embedding model** (`text-embedding-3-small`), one dataset (`longmemeval_s`).
+- **One embedding model, one dataset** (canonical row).
 
 ### 8.2 Recall-vs-age curve (A10) — decay bug found → fixed (before / after; §4.5)
 
@@ -495,25 +502,25 @@ membership is invariant too). Decay is now what it was always documented to be �
 occasionally pushing gold below rank 10 but **never removing it**), i.e. the "mild drag,
 zero recall loss" the smoke *wrongly assumed* is now actually true. Validated by the
 `stale_relevant_memory_survives_decay_filter` unit test and a green store suite (16
-store.rs tests; §4.5). See §8.3 for why the importance variant recovers to recall@10=1.000.
+store.rs tests; §4.5). See §8.3 for why the importance variant recovers to the recall ceiling.
 
 Note the flat post-fix recall curve is a **definitional** consequence of the fix, not an
 aging-robustness demonstration: gating on raw `cosine_dist` makes top-k *membership*
 age-independent, so recall cannot vary across rounds by construction. The residual decay
-effect lives entirely in *ranking* — decay-only nDCG 0.603 vs baseline 0.824 — which the
-reorder still produces.
+effect lives entirely in *ranking* — decay's nDCG drop vs the baseline (§8.2 after-table) —
+which the reorder still produces.
 
 ### 8.3 Importance (A7) — a clean ranking win (clearest post-fix)
 
 With importance actually varying (gold 0.95 / non-gold 0.5, SQL-injected per A7 since
 the create API drops the field — §4.6), the weighting math helps in both runs; the
 **post-fix** run makes it unmistakable. Post-fix, the importance variant is the **best
-of the three decay conditions**: recall@10 = **1.000** (vs decay-only 0.950 / aeon-full
-0.925), nDCG@10 = **0.811** (vs 0.603 / 0.600 — near the 0.824 baseline), with gold
-pinned to `mean_first_gold_rank ≈ 1.0` in every round. The mechanism: non-gold takes a
+of the three decay conditions** — highest post-fix recall@10 and nDCG@10 (near the
+baseline), with gold pinned to `mean_first_gold_rank ≈ 1.0` in every round (per-condition
+figures in the §8.2 after-table). The mechanism: non-gold takes a
 larger distance penalty (`1 + 0.5·(1−0.5)=1.25`) than gold (`1 + 0.5·(1−0.95)=1.025`),
 so gold is pulled up and recovers the recall the plain decay conditions leave on the
-table. Under pressure it also edges the others (retention 0.903, nDCG 0.820). This win
+table. Under pressure it also edges the others (§8.1 canonical, `aeon-full-importance` post-fix row). This win
 was **masked pre-fix** — decay's removal filter destroyed gold regardless of importance;
 only after the §4.5 fix does the weighting benefit show cleanly. The §4.6 product gap
 stands: importance is inert in production until the create API accepts the field.
@@ -534,9 +541,9 @@ never learned, so there is nothing to measure.
   **chat-completion proxy** (`src/proxy.rs:332`). The semantic benchmark seeds/queries
   via the management + retrieval APIs and never traverses the proxy, so no episodes are
   recorded. The `/feedback` endpoint updates AMP `utility_ema`, not RMK episodes.
-- The tiny pressure blip in the isolation run (amp-rmk 0.895 vs amp-only 0.876) is
-  **noise, not learning** — the LRU/random comparators shifted too (0.327/0.347 vs
-  0.272/0.307) and there was no policy in the DB to apply.
+- The tiny pressure blip between the `amp-rmk` and `amp-only` rows (§8.1 canonical) is
+  **noise, not learning** — the LRU/random comparators shifted too, and there was no
+  policy in the DB to apply.
 
 **Verdict: RMK learning is not measurable here — 0 episodes recorded — NOT "no lift."**
 The distinction is the honest one: we did not test RMK and find it neutral; we found
@@ -559,8 +566,9 @@ across conditions (same seed 42).
 
 ### 8.6 What this changes
 
-1. **Headline holds:** AMP ~2.5–3.0× under pressure at N=40, before **and** after the
-   §4.5 fix (§8.1) — the fix does not contaminate it.
+1. **Headline holds:** AMP's pressure advantage over gold-blind eviction holds at N=40,
+   before **and** after the §4.5 fix — the fix does not contaminate it (figures: §8.1
+   canonical table).
 2. **§4.5 decay bug: found → FIXED → validated** (§4.5, §8.2). Pre-fix collapse
    (r5 ≈ 0.13) → post-fix flat curves (0.925–1.000); survival test + green store suite
    (16 store.rs tests). Decay is now the documented mild reorder, zero recall loss.
@@ -607,9 +615,9 @@ itself was not separately committed until afterward.
 cadence was verified live in-kernel (`cooldown_secs=60 min_episodes=5 epsilon=0.1`) and
 RMK's workers ran. Rounds ranking was byte-identical to `amp-only` (recall@10 = 1.000,
 nDCG = 0.8234, MRR = 0.9363) — expected, since RMK modulates AMP *eviction*, not
-non-pressure retrieval. Under pressure, `amp-rmk` gold_retention **0.895** vs `amp-only`
-**0.876** (+1.9 pp), but the LRU/random comparators shifted too (0.327/0.347 vs
-0.272/0.307), so the delta is noise. **Decisive check:** after the run,
+non-pressure retrieval. Under pressure, the `amp-rmk` vs `amp-only` rows (§8.1 canonical)
+differ by only ~+1.9 pp, and the LRU/random comparators shifted too, so the delta is
+noise. **Decisive check:** after the run,
 **`rmk_episodes = 0` and `rmk_policies = 0`** — the learning loop recorded nothing and
 created no policy, so `min_episodes=5` was never reached and no learning happened.
 **Verdict: not "neutral" — structurally unmeasurable.** Episodes are recorded only on
