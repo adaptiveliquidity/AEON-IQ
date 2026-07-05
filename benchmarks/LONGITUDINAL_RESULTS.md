@@ -6,7 +6,7 @@
 > far more gold under pressure than gold-blind LRU/random (~2.5–3.0×; all exact per-arm
 > figures and ranges live in the §8.1 canonical table)**. The
 > stress test also **confirmed the §4.5 decay-filter bug is severe** (configured decay
-> collapsed recall as memory ages: r1 ~0.90–0.98 → r5 ~0.13–0.15). That bug was then **fixed and validated** (commit
+> collapsed recall as memory ages — see the §8.2 before/after curves). That bug was then **fixed and validated** (commit
 > `49cd083` + survival test + green store suite (16 store.rs tests) + clean N=40 re-run — §8.2 carries
 > the before/after curves), and the AMP headline was **re-confirmed post-fix**
 > (§8.1 canonical table, rows 4–6). RMK was found **structurally unmeasurable** by this retrieval-only
@@ -228,9 +228,9 @@ ranking drag with zero recall loss.* The scaled run (A10 repeated-measure aging,
 overturns that belief.** The smoke only ever scored round 1, so aging never
 accumulated and the removal never triggered. At N=40 with the corpus aging under
 repeated rounds, the filter fires hard: every condition with configured decay
-(`0.03`) collapses from recall@10 ≈ 0.90–0.98 at round 1 to **≈ 0.13–0.15 at round 5**,
-while the two decay-off conditions (baseline, amp-only) stay pinned at **1.0** across
-all rounds. That `recall@5 == recall@10` in every collapsed row (§8.2) is the
+(`0.03`) collapses from near-ceiling recall@10 at round 1 to near-zero by round 5
+(the §8.2 before-table), while the two decay-off conditions (baseline, amp-only) stay
+pinned at the ceiling across all rounds. That `recall@5 == recall@10` in every collapsed row (§8.2) is the
 signature of **removal, not demotion** — aged gold crosses the distance ceiling and
 is dropped from the candidate set entirely. So the effect is not a mild drag: **as
 shipped-configured, decay actively destroys recall as memory ages.**
@@ -332,8 +332,8 @@ the A11 isolation test.
 
 - **The one robust result (still smoke-scale):** *Under memory pressure, AMP's
   adaptive eviction preserves substantially more task-relevant memory than LRU or
-  random* (~1.7–2.2× **at smoke scale**; the scaled N=40 run gives ~2.5–3.0×, §8.1).
-  This is the headline worth
+  random* (~1.7–2.2× **at smoke scale**; the scaled N=40 run is larger — see the §8.1
+  canonical table). This is the headline worth
   pursuing — but it is **still n = 3 and must be confirmed by the publication-scale
   run** before it is stated as a result.
 - **Provisional only (n = 3, noisy):** no *measurable* ranking lift from decay /
@@ -415,14 +415,19 @@ soft-evicts the same settled K to target ≈ 1000), 40 per-agent samples per con
 | aeon-full-importance | post-fix | **0.903** | 0.369 | 0.330 | ~2.4× | 1.000 / 0.820 |
 | amp-rmk (A11) | post-fix | **0.895** | 0.327 | 0.347 | ~2.7× | 1.000 / 0.843 |
 
-> **⟵ CANONICAL SOURCE — single source of truth for every pressure number in this
-> document.** All prose (banner, §8.3, §8.4, §8.6, §8.7, and DESIGN §13) **points here and
-> does not restate these values.** Figures *derived* from this table, computed once:
+> **⟵ CANONICAL SOURCE.** This table plus the derived-figures list below are the single
+> source for every **exact** pressure value and range in this document. Prose elsewhere
+> (§5, §8.3, §8.4, §8.6, §8.7, and DESIGN §13) **points here rather than restating exact
+> values.** **One deliberate, whitelisted exception:** the single rounded headline ratio
+> (**~2.5–3.0×**) may appear at the abstract/banner level as the top-line result — it is
+> the paper's pitch and lives there by design; every exact figure it summarizes is in this
+> table. No other prose restates a pressure value, range, or ratio. Figures *derived* from
+> this table, computed once:
 > - **AMP gold_retention range: 0.876–0.911** (min = `amp-only`; max = `aeon-full-importance`
 >   pre-fix). The four post-fix arms sit at **0.895–0.903**.
 > - **LRU/random range: 0.272–0.369** → reported band **~0.27–0.37**.
 > - **AMP advantage: ~2.5–3.0×** (per-arm extremes 0.903/0.369 ≈ 2.45× … 0.876/0.272 ≈ 3.2×).
-> - **Controller:** `converged = false`, active ≈ 981, settled K ≈ 2035 (~2× target 1000).
+> - **Controller:** `converged = false` (**all 240 agent-runs**); active ≈ 973, settled K ≈ 2017 (40-agent means; ~2× target 1000).
 > - **Run config:** N = 40, seed 42, `text-embedding-3-small`, `longmemeval_s`,
 >   `pressure_multiplier = 2.5`.
 
@@ -570,7 +575,7 @@ across conditions (same seed 42).
    before **and** after the §4.5 fix — the fix does not contaminate it (figures: §8.1
    canonical table).
 2. **§4.5 decay bug: found → FIXED → validated** (§4.5, §8.2). Pre-fix collapse
-   (r5 ≈ 0.13) → post-fix flat curves (0.925–1.000); survival test + green store suite
+   → post-fix flat curves (§8.2 before/after tables); survival test + green store suite
    (16 store.rs tests). Decay is now the documented mild reorder, zero recall loss.
 3. **Importance:** a clean ranking win, clearest post-fix (recall@10=1.000, nDCG 0.811;
    §8.3); production create-API gap (§4.6) unchanged.
