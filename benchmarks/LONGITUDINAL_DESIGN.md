@@ -230,9 +230,9 @@ kernel findings) so #41 is complete from either side.
 
 The scaled A10 aging curve (RESULTS §8.2) overturned the smoke's benign read. Under
 accumulated aging, configured decay (`0.03`) **removed** aged gold below the distance
-threshold: every decay-on condition collapsed recall@10 from ~0.90–0.98 (r1) to
-**~0.13–0.15 (r5)**, while decay-off conditions stayed at 1.0; `recall@5 == recall@10`
-in collapsed rows confirmed removal, not demotion. **Fixed** (commit `49cd083`):
+threshold: every decay-on condition collapsed recall@10 hard across rounds (see the
+RESULTS §8.2 before-table), while decay-off conditions stayed at the ceiling;
+`recall@5 == recall@10` in collapsed rows confirmed removal, not demotion. **Fixed** (commit `49cd083`):
 threshold gates raw `cosine_dist`; decay/importance keep `ORDER BY distance` so they
 reorder only (matching the `decay_reorders_stale_memories` intent). Validated three
 ways: (1) new `stale_relevant_memory_survives_decay_filter` unit test, (2) green store
@@ -246,8 +246,8 @@ re-run. §8.2 keeps the pre-fix (before) and corrected (after) curves side by si
 ### 13d. Scaled results (see RESULTS §8 for full tables)
 
 - **AMP under pressure — the pillar, holds before AND after the fix:** AMP preserves
-  near-all gold under pressure vs gold-blind LRU/random, **~2.5–3.0×**, on every arm
-  before and after the fix. **All exact per-arm figures and ranges live in the RESULTS
+  near-all gold under pressure vs gold-blind LRU/random, on every arm before and after
+  the fix. **All exact per-arm figures, ranges, and the headline ratio live in the RESULTS
   §8.1 canonical table — this doc does not restate them** (single source of truth, so no
   number can drift between the two docs). The §4.5
   fix targets the retrieval threshold, which the pressure metric does not depend on — so
@@ -280,7 +280,8 @@ re-run. §8.2 keeps the pre-fix (before) and corrected (after) curves side by si
    re-run). Corrected before/after curves in RESULTS §8.2.
 2. **A11 RMK isolation — DONE, run once.** Verdict: structurally unmeasurable here
    (0 episodes); §4.10 records the product fact.
-3. **Paper framing:** one pillar (AMP ~2.5–3× under pressure, holds post-fix); two
+3. **Paper framing:** one pillar (AMP under pressure, holds post-fix — ratio/figures in
+   RESULTS §8.1 canonical); two
    honest supporting results (decay found-and-fixed; importance ranking win); one honest
    boundary (RMK). **RMK paper footnote:** *"RMK's online learning is exercised via the
    chat path, not measured here; a real verdict requires a separate proxy-path
