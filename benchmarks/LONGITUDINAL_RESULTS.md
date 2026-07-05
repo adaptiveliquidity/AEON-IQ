@@ -424,7 +424,7 @@ soft-evicts the same settled K to target ≈ 1000), 40 per-agent samples per con
 > table. No other prose restates a pressure value, range, or ratio. Figures *derived* from
 > this table, computed once:
 > - **AMP gold_retention range: 0.876–0.911** (min = `amp-only`; max = `aeon-full-importance`
->   pre-fix). The four post-fix arms sit at **0.895–0.903**.
+>   pre-fix). The three post-fix arms (rows 4–6) sit at **0.895–0.903**.
 > - **LRU/random range: 0.272–0.369** → reported band **~0.27–0.37**.
 > - **AMP advantage: ~2.5–3.0×** (per-arm extremes 0.903/0.369 ≈ 2.45× … 0.876/0.272 ≈ 3.2×).
 > - **Controller:** `converged = false` (**all 240 agent-runs**); active ≈ 973, settled K ≈ 2017 (40-agent means; ~2× target 1000).
