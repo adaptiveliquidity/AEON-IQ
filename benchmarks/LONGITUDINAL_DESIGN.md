@@ -245,10 +245,11 @@ re-run. §8.2 keeps the pre-fix (before) and corrected (after) curves side by si
 
 ### 13d. Scaled results (see RESULTS §8 for full tables)
 
-- **AMP under pressure — the pillar, holds before AND after the fix:** gold_retention
-  **0.876–0.911** (AMP; min = pre-fix amp-only, max = pre-fix importance) vs 0.272–0.369
-  (LRU/random), ~2.5–3.0× across every pressure arm (post-fix arms sit at 0.895–0.903:
-  aeon-full 0.899 / importance 0.903 / amp-rmk 0.895). The §4.5
+- **AMP under pressure — the pillar, holds before AND after the fix:** AMP preserves
+  near-all gold under pressure vs gold-blind LRU/random, **~2.5–3.0×**, on every arm
+  before and after the fix. **All exact per-arm figures and ranges live in the RESULTS
+  §8.1 canonical table — this doc does not restate them** (single source of truth, so no
+  number can drift between the two docs). The §4.5
   fix targets the retrieval threshold, which the pressure metric does not depend on — so
   the headline is **not contaminated** by the fix. **Precision caveats (RESULTS §8.1):**
   single seed (42) ⇒ no confidence intervals, the ratio is a one-run point estimate;
@@ -256,7 +257,8 @@ re-run. §8.2 keeps the pre-fix (before) and corrected (after) curves side by si
   still valid, but convergence must not be implied); the ratio depends on the
   `pressure_multiplier=2.5` setpoint. Comparator drop smoke→scale is mechanistic:
   gold-blind eviction retains gold ∝ surviving fraction, so the larger untruncated corpus
-  ⇒ higher eviction fraction ⇒ lower blind-dilution floor (~0.27–0.37). Setpoint-independent
+  ⇒ higher eviction fraction ⇒ lower blind-dilution floor (the comparator band; figures in
+  RESULTS §8.1 canonical table). Setpoint-independent
   claim: *AMP preserves gold near-fully while gold-blind eviction loses it in proportion to
   the eviction fraction.*
 - **Decay — found → fixed:** pre-fix collapse (r5 ≈ 0.13) → post-fix flat curves
@@ -268,7 +270,8 @@ re-run. §8.2 keeps the pre-fix (before) and corrected (after) curves side by si
   A11 isolation run recorded **0 episodes** (`rmk_episodes=0`, `rmk_policies=0`), so it
   never learned. Cause (§4.10): episodes are recorded only on the chat-completion proxy
   path (`proxy.rs:332`), which a retrieval-only benchmark bypasses. Cadence was wired +
-  verified live (60/5); the small pressure delta (0.895 vs 0.876) is noise. A real
+  verified live (60/5); the small pressure delta (amp-rmk vs amp-only rows, RESULTS §8.1)
+  is noise. A real
   verdict needs a proxy-path benchmark.
 
 ### 13e. Status — done (both branches complete)
