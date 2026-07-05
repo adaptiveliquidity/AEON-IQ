@@ -52,29 +52,53 @@ estimate. This directly retires the single strongest caveat in the current write
 No parameter changes; `--seed` is the only variable. Each seed re-samples the LongMemEval
 subset and re-draws the gold-blind aging RNG, exactly as designed.
 
-**Reporting (committed now):**
-- Per-arm `gold_retention`: report the **per-seed means** (5 values) **and** the
-  across-seed **mean ± 95% CI** (bootstrap over the 5 seed-level means; state the small
-  seed-n honestly). Also note the within-seed agent spread (40 agents/seed).
-- Headline ratio: report as a **range across seeds** (e.g. "2.x–3.y× across 5 seeds"),
-  not a single number.
-- Comparators (LRU/random and the A13 baseline): same treatment.
+**Reporting rules (LOCKED before any run):**
+- **All 5 seeds are reported — none dropped for any reason** (never excluded because a
+  seed's number, variance, or result is inconvenient).
+- Per-arm `gold_retention`: report **all 5 per-seed means** **and** the across-seed
+  **mean ± 95% CI**, where the CI is computed by **bootstrap over the 5 seed-level means,
+  percentile method** (seed-n = 5, stated honestly). Also note the within-seed agent
+  spread (40 agents/seed).
+- Headline ratio: report as the **across-seed range** (e.g. "2.x–3.y× across 5 seeds"),
+  **never a single value**.
+- Comparators (LRU/random): same treatment. **No strong gold-blind baseline this phase** —
+  deferred to the A16 proxy-path benchmark (below).
+- If any pressure arm's CI includes 0, report it explicitly as **"not seed-robust on
+  arm X"** — **no rerun, no reframe, no tuning.**
 
-**Success criterion (committed now).** AMP's pressure advantage is confirmed as a
-seed-robust effect **iff** the across-seed 95% CI of
-`AMP gold_retention − max(LRU, random, A13) gold_retention` **excludes 0** for the primary arms.
-- If it excludes 0 (expected, given the current ~0.5 absolute margin): the caveat converts
-  to a strength — "seed-robust across 5 seeds, ratio X–Y×."
-- If it includes 0 (report honestly regardless): "advantage not seed-robust; ratio varies
-  X–Y with overlapping intervals." No tuning.
+**Primary success criterion (LOCKED before any run).** AMP's pressure advantage is confirmed
+seed-robust **iff** the across-seed **95% CI (bootstrap over the 5 seed-level means, percentile
+method)** of `AMP gold_retention − max(LRU, random) gold_retention` **excludes 0 on each of the
+4 primary pressure arms**: `amp-only`, `aeon-full`, `aeon-full-importance`, `amp-rmk`.
+- The **4 pressure arms are primary**; the recall@k / nDCG curves (§8.2) are **supporting,
+  not gating**.
+- Arm excludes 0 → "seed-robust on arm X; ratio X–Y×."
+- Arm includes 0 → report exactly **"not seed-robust on arm X"** — as the finding, no rerun,
+  no reframe, no tuning.
+- The strong gold-blind baseline is **deferred to a future proxy-path benchmark (A16, with
+  RMK)** — it is not exercisable in this retrieval-only harness.
 
-**Cost / gate.** Embedding $ is low (text-embedding-3-small; even ~100k embeddings is
-single-digit dollars). The real cost is wall-clock ≈ **5× your single N=40 run** (fill in
-the actual N=40 runtime you observed). **Human gate before spending**, per your standing rule.
+**Cost / gate (measured).** API $ is negligible — retrieval-only, `text-embedding-3-small`
+only, **no generation calls**: **< $1 total** across all 5 seeds. The real cost is wall-clock:
+measured per-seed ≈ **3.6–4.5 h** over the 6 conditions (from the Phase-1 N=40 per-condition
+timings), so **~18–22 h total, run sequentially** on the single bench stack (one postgres +
+kernel, fixed host ports — no parallel stacks). All 5 seeds run **fresh on the fixed kernel**
+(decay fix `49cd083` + RMK env-wiring `89ef009`). **Human gate before spending**, per your
+standing rule.
 
 ---
 
 ### A13 — One stronger, gold-blind baseline: LFU (least-frequently-used)
+
+> **⛔ SUPERSEDED / DEFERRED (2026-07-05) — NOT run in A12.** LFU-on-`access_count` proved
+> **degenerate** in this retrieval-only harness: `access_count` is incremented only on the
+> chat/`retrieval.rs:173` path, which the benchmark bypasses (`/api/v1/memories/search` →
+> `store::search_memories_all_sensitivities`, no bump) — verified, **0 rows populated** (an
+> N=2 smoke caught it), so LFU collapses to LRU. A `utility_ema`-greedy variant was also
+> rejected: the harness feeds feedback **1.0/gold, 0.0/distractor**, so `utility_ema` encodes
+> the gold label — **not gold-blind** (it reads the answer key). **The strong gold-blind
+> baseline is deferred to the A16 proxy-path benchmark (with RMK), below.** The original A13
+> text is kept as the honest record of the approach and why it was dropped.
 
 **Why LFU specifically.** The current comparators (LRU, random) are *importance-blind and
 access-blind* — beating them is expected and a reviewer discounts it. LFU is the honest
@@ -166,11 +190,12 @@ not forgotten, explicitly deferred.
 1. **Commit this pre-registration** (A12–A15) to the repo **before any Phase-2 run** — same
    discipline as A1–A11.
 2. **Human gate** on spend/scope before the A12/A13 runs (your standing rule).
-3. **Run A12 + A13 together** (LFU is just another comparator column across the same 5-seed
-   runs, so they share compute — one 5-seed sweep produces both).
-4. **Extend the RESULTS §8.1 canonical table** with the multi-seed CIs and the LFU column;
-   update the derived-figures line. Single source preserved.
-5. **A14 smoke** can run in parallel; its go/no-go decides whether the full RMK run happens.
+3. **Run A12 alone** — one 5-seed sweep, comparators **AMP vs LRU vs random** only. The
+   strong gold-blind baseline (A13) is **dropped from this phase** and deferred to A16.
+4. **Extend the RESULTS §8.1 canonical table** with the multi-seed CIs (AMP/LRU/random) and
+   update the derived-figures line. **No LFU column** (deferred to A16). Single source preserved.
+5. **A16** (proxy-path: strong baseline + RMK, absorbing A14) is the committed **next phase**,
+   run after A12 — see the A16 sketch below.
 6. **Then, and only then, draft both papers** from the strengthened canonical numbers —
    research (arXiv/LaTeX) and white paper (product/investor) sharing one dataset.
 7. **No result is folded into either paper before the canonical table is updated and you've
@@ -181,8 +206,45 @@ not forgotten, explicitly deferred.
 - **A12 likely succeeds** and strengthens the claim (the ~0.5 absolute margin is very
   unlikely to vanish across seeds); its job is to convert a point estimate into a CI-bounded
   effect.
-- **A13 (LFU) is the real test** and is *expected* to narrow the gap — that narrowing
-  quantifies how much of AMP is "learned policy" vs "uses access signal." Both outcomes are
-  publishable; one is just a more modest claim than the other.
-- **A14 may return empty** (no measurable RMK learning). That is a legitimate, pre-committed
-  outcome, not a failed experiment — it bounds the claim honestly.
+- **The strong gold-blind baseline (A13) is deferred to A16** — LFU-on-`access_count` was found
+  degenerate in this retrieval-only harness (the signal is chat-path-only). A12 reports the
+  missing strong opponent as a known limitation; **A16 delivers it on the proxy path.**
+- **A16 may return a modest or empty result** (a strong baseline that matches AMP, or RMK with
+  no measurable learning). Those are legitimate, pre-committed outcomes that bound the claim
+  honestly — not failed experiments.
+
+---
+
+## PHASE 3 — committed next phase (proxy-path benchmark)
+
+### A16 — Proxy-path benchmark: one harness unlocks the strong baseline + RMK (SKETCH)
+
+**Status:** **committed next phase — not vague future work.** Sketch + rationale only; **no
+build, no run, no locked design yet.** A12 (5-seed CIs) ships first and independently; A16 is
+the arXiv paper's smart-opponent + RMK section.
+
+**Why (the gap A12 leaves, root-caused).** The A12 harness is retrieval-only — it scores via
+`POST /api/v1/memories/search`, which bypasses the chat/`retrieval.rs` path. **Two signals live
+only on that path:** `access_count` (bumped in `bump_access_counts`, `retrieval.rs:173`) and RMK
+episodes (`insert_episode`, `proxy.rs:332`). A retrieval-only harness structurally cannot populate
+either — which makes a real frequency baseline degenerate (access_count all-0 → LFU≡LRU) **and**
+RMK unmeasurable (0 episodes). **One code path is the single root cause of both gaps.**
+
+**What A16 does.** Drive the workload through the **chat-completion proxy** (`MEMORYOS_ROLE=all`)
+instead of the raw search endpoint, over the same seeded/aged/gold-structured corpus. One harness,
+one code path, two results:
+1. **A real gold-blind frequency/utility baseline** — LFU on genuinely-populated `access_count`
+   (and/or a utility-greedy variant). Because `access_count` is driven by **actual retrieval
+   frequency**, not the gold-labeled `/feedback` signal, the baseline is **gold-blind by
+   construction** — the "smart opponent" a reviewer demands.
+2. **RMK learning measurement** (absorbs A14) — episodes fire, so RMK policy drift and any
+   downstream recall/nDCG lift become measurable (RMK-on vs RMK-off on the same proxy workload).
+
+**Open design questions (A16's own pre-registration, drafted when greenlit — not now):** how the
+proxy workload maps to LongMemEval turns; how pressure/eviction is measured on this path; how to
+keep the frequency baseline **gold-blind** (feedback must **not** encode gold here, unlike A12);
+cost (the chat path adds LLM generation calls — materially more than A12's embed-only <$1).
+
+**Sequencing.** A12 first and independently. A16 is the committed follow-on that converts "strong
+baseline + RMK deferred" from an A12 limitation into the next paper section; it **supersedes and
+absorbs A14** (RMK proxy-path) into one unified harness.
