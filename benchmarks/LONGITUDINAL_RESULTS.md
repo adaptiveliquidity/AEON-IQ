@@ -414,6 +414,12 @@ bootstrap (B=10,000) over the 5 seed-level means (seed-n=5, stated honestly).
 | `aeon-full-importance` | 0.901 [0.892, 0.908] | 0.335 | **0.566 [0.546, 0.586]** | 2.49–2.86× | ✅ |
 | `amp-rmk` | 0.903 [0.892, 0.914] | 0.348 | **0.555 [0.550, 0.564]** | 2.54–2.66× | ✅ |
 
+**Per-seed inputs (all 5 seeds, none dropped) — AMP / max(LRU,random) `gold_retention`:**
+- `amp-only`: 42: 0.890/0.343 · 7: 0.901/0.310 · 123: 0.902/0.329 · 2024: 0.878/0.310 · 99: 0.882/0.311
+- `aeon-full`: 42: 0.922/0.347 · 7: 0.902/0.336 · 123: 0.915/0.350 · 2024: 0.913/0.369 · 99: 0.914/0.335
+- `aeon-full-importance`: 42: 0.886/0.350 · 7: 0.913/0.325 · 123: 0.899/0.319 · 2024: 0.900/0.362 · 99: 0.904/0.317
+- `amp-rmk`: 42: 0.885/0.333 · 7: 0.921/0.349 · 123: 0.911/0.358 · 2024: 0.905/0.353 · 99: 0.894/0.346
+
 **Verdict — locked criterion (§A12, `946c01a`):** the across-seed 95% CI of
 `AMP − max(LRU, random)` **excludes 0 on all 4 primary pressure arms → seed-robust, 4/4.**
 All 5 seeds reported, none dropped; result reported as-is (no reruns, no reframing).
