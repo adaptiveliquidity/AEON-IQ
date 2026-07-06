@@ -2,9 +2,9 @@
 
 > **▶ Scaled publication run (N=40, seed 42, untruncated `longmemeval_s`, RMK ON)
 > completed 2026-07-04 — see [§8](#8-scaled-publication-run-n40-2026-07-04).**
-> Headline (single N=40 run, seed 42 — point estimate, see §8.1 caveats): **AMP retains
-> far more gold under pressure than gold-blind LRU/random (~2.5–3.0×; all exact per-arm
-> figures and ranges live in the §8.1 canonical table)**. The
+> Headline (5-seed confidence intervals, A12 — seed-robust): **AMP retains
+> far more gold under pressure than gold-blind LRU/random (~2.5–2.9×, 95% CI excludes 0 on all
+> 4 pressure arms; exact per-arm figures live in the §8.1 canonical table)**. The
 > stress test also **confirmed the §4.5 decay-filter bug is severe** (configured decay
 > collapsed recall as memory ages — see the §8.2 before/after curves). That bug was then **fixed and validated** (commit
 > `49cd083` + survival test + green store suite (16 store.rs tests) + clean N=40 re-run — §8.2 carries
@@ -401,10 +401,35 @@ run (anti-cherry-pick trail). All 5 conditions completed `status = ok`.
 number) **and** the CORRECTED post-fix curve side by side. The AMP headline (§8.1) was
 re-confirmed post-fix and is not contaminated by the decay change.
 
-### 8.1 Memory pressure (eviction) — the robust result, confirmed at scale
+### 8.1 Memory pressure (eviction) — the robust result, 5-seed confidence intervals (A12)
 
-Primary metric `gold_retention` (fraction of gold still retrievable after each policy
-soft-evicts the same settled K to target ≈ 1000), 40 per-agent samples per condition:
+**▶ HEADLINE (canonical): 5-seed confidence intervals (A12).** Primary metric `gold_retention`
+(40-agent mean per seed), N=40, 5 pre-registered seeds (42/7/123/2024/99). CIs = percentile
+bootstrap (B=10,000) over the 5 seed-level means (seed-n=5, stated honestly).
+
+| arm | AMP mean [95% CI] | max(LRU,random) | AMP−max diff [95% CI] | ratio range | seed-robust? |
+|-----|:-----------------:|:---------------:|:---------------------:|:-----------:|:------------:|
+| `amp-only` | 0.890 [0.882, 0.899] | 0.321 | **0.570 [0.556, 0.582]** | 2.59–2.90× | ✅ |
+| `aeon-full` | 0.913 [0.907, 0.919] | 0.347 | **0.566 [0.554, 0.575]** | 2.47–2.73× | ✅ |
+| `aeon-full-importance` | 0.901 [0.892, 0.908] | 0.335 | **0.566 [0.546, 0.586]** | 2.49–2.86× | ✅ |
+| `amp-rmk` | 0.903 [0.892, 0.914] | 0.348 | **0.555 [0.550, 0.564]** | 2.54–2.66× | ✅ |
+
+**Verdict — locked criterion (§A12, `946c01a`):** the across-seed 95% CI of
+`AMP − max(LRU, random)` **excludes 0 on all 4 primary pressure arms → seed-robust, 4/4.**
+All 5 seeds reported, none dropped; result reported as-is (no reruns, no reframing).
+
+> **⟵ CANONICAL SOURCE (headline).** These four rows are the single source for the pressure
+> result and its ratio; all prose (banner, §5, §8.x, DESIGN §13, both papers) points here.
+> Derived once: **AMP advantage ~2.5–2.9×** (across-seed per-arm ratio range 2.47–2.90×);
+> AMP `gold_retention` 0.878–0.922 across all 20 cells; comparator (LRU/random) band ~0.28–0.37.
+> Config: N=40, seeds 42/7/123/2024/99, `text-embedding-3-small`, `longmemeval_s`,
+> `pressure_multiplier=2.5`; controller `converged=false` on all runs (same-K comparison valid).
+
+---
+
+**Phase-1 single-seed record (seed 42, N=40) — SUPERSEDED by the 5-seed CIs above.** Retained
+for the §4.5 found-and-fixed trail (pre-fix vs post-fix at a single seed); **not the headline.**
+Primary metric `gold_retention`, 40 per-agent samples per condition:
 
 | condition | phase | **AMP** gold-ret | LRU | random | ratio | AMP post-evict r@10 / nDCG |
 |-----------|:-----:|:------:|:---:|:------:|:----:|:-------------------------:|
@@ -415,18 +440,16 @@ soft-evicts the same settled K to target ≈ 1000), 40 per-agent samples per con
 | aeon-full-importance | post-fix | **0.903** | 0.369 | 0.330 | ~2.4× | 1.000 / 0.820 |
 | amp-rmk (A11) | post-fix | **0.895** | 0.327 | 0.347 | ~2.7× | 1.000 / 0.843 |
 
-> **⟵ CANONICAL SOURCE.** This table plus the derived-figures list below are the single
-> source for every **exact** pressure value and range in this document. Prose elsewhere
-> (§5, §8.3, §8.4, §8.6, §8.7, and DESIGN §13) **points here rather than restating exact
-> values.** **One deliberate, whitelisted exception:** the single rounded headline ratio
-> (**~2.5–3.0×**) may appear at the abstract/banner level as the top-line result — it is
-> the paper's pitch and lives there by design; every exact figure it summarizes is in this
-> table. No other prose restates a pressure value, range, or ratio. Figures *derived* from
-> this table, computed once:
+> **⟵ Phase-1 single-seed figures (SUPERSEDED — the A12 5-seed block above is now canonical).**
+> These are the seed-42 point estimates, retained for the found-and-fixed trail. The single
+> **whitelisted headline ratio (~2.5–2.9×)** and every exact pressure figure now flow from the
+> A12 canonical block above; this block is the Phase-1 record only. Figures *derived* from this
+> Phase-1 table:
 > - **AMP gold_retention range: 0.876–0.911** (min = `amp-only`; max = `aeon-full-importance`
 >   pre-fix). The three post-fix arms (rows 4–6) sit at **0.895–0.903**.
 > - **LRU/random range: 0.272–0.369** → reported band **~0.27–0.37**.
-> - **AMP advantage: ~2.5–3.0×** (per-arm extremes 0.903/0.369 ≈ 2.45× … 0.876/0.272 ≈ 3.2×).
+> - **AMP advantage (headline, 5-seed CI): ~2.5–2.9×** — see the A12 canonical block above
+>   (these Phase-1 single-seed extremes were 2.45×–3.2×).
 > - **Controller:** `converged = false` (**all 240 agent-runs**); active ≈ 973, settled K ≈ 2017 (40-agent means; ~2× target 1000).
 > - **Run config:** N = 40, seed 42, `text-embedding-3-small`, `longmemeval_s`,
 >   `pressure_multiplier = 2.5`.
@@ -448,9 +471,10 @@ gold the rounds phase reinforced. The widening edge is a predictable consequence
 pressure at scale, not a lucky baseline shift.
 
 **Caveats — do not overstate precision:**
-- **Single seed (42), no confidence intervals.** Every figure in the canonical table is one
-  run; the advantage is a point estimate, not a variance-bounded effect. "Consistent" means
-  "held on every arm and every agent in this run," **not** "across seeds."
+- **Headline is 5-seed CI-backed (A12); the Phase-1 record is single-seed.** The A12 canonical
+  block reports the advantage across 5 pre-registered seeds with 95% CIs (seed-robust, 4/4 arms).
+  The Phase-1 table below is a single-seed (42) point estimate, retained for the found-and-fixed
+  trail — not a variance-bounded claim on its own.
 - **AMP did not converge.** The PI controller hit the 20-sweep cap with `converged: false`
   (canonical Controller row). The comparison stays valid — all three arms evict the *same*
   settled K — but "convergence" must not be implied.
